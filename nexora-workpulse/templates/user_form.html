@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block title %}Create team member{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>Create team member</h1>
+  {% for e in errors %}<div class="flash flash-error" role="alert">{{ e }}</div>{% endfor %}
+  <form method="post" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="name">Full name</label><input id="name" name="name" value="{{ v.name }}" maxlength="80" required>
+    <label for="email">Email address</label><input id="email" name="email" type="email" value="{{ v.email }}" maxlength="254" required>
+    <label for="pw">Initial password (min {{ min_length }} characters)</label><input id="pw" name="password" type="password" autocomplete="new-password" required>
+    <label for="cf">Confirm password</label><input id="cf" name="confirm_password" type="password" autocomplete="new-password" required>
+    <p class="note">Share the password through a secure channel. The member can change it from the Password page.</p>
+    <button class="btn btn-primary" type="submit">Create account</button> <a class="btn btn-ghost" href="{{ url_for('web.users') }}">Cancel</a>
+  </form>
+</div>
+{% endblock %}

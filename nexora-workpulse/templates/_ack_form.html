@@ -1,0 +1,15 @@
+<form method="post" action="{{ url_for('web.submit_ack') }}" class="stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label for="tasks_worked">Tasks worked on *</label>
+  <textarea id="tasks_worked" name="tasks_worked" rows="2" maxlength="3000" required>{{ values.get('tasks_worked', '') }}</textarea>
+  <label for="work_completed">Work completed *</label>
+  <textarea id="work_completed" name="work_completed" rows="3" maxlength="5000" required>{{ values.get('work_completed', '') }}</textarea>
+  <label for="deliverable_links">Deliverable links (one per line)</label>
+  <textarea id="deliverable_links" name="deliverable_links" rows="2" maxlength="2000" placeholder="https://...">{{ values.get('deliverable_links', '') }}</textarea>
+  <div class="grid-3">
+    <div><label for="problems">Problems encountered</label><textarea id="problems" name="problems" rows="3" maxlength="3000">{{ values.get('problems', '') }}</textarea></div>
+    <div><label for="pending_work">Pending work</label><textarea id="pending_work" name="pending_work" rows="3" maxlength="3000">{{ values.get('pending_work', '') }}</textarea></div>
+    <div><label for="next_steps">Next steps</label><textarea id="next_steps" name="next_steps" rows="3" maxlength="3000">{{ values.get('next_steps', '') }}</textarea></div>
+  </div>
+  <button class="btn btn-primary" type="submit">Submit daily acknowledgement</button>
+</form>

@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}Team{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Team accounts</h1><a class="btn btn-primary" href="{{ url_for('web.user_new') }}">Create team member</a></div>
+<section class="card"><div class="table-wrap"><table>
+  <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th>Actions</th></tr></thead>
+  <tbody>{% for u in users %}
+    <tr><td><b>{{ u.name }}</b></td><td>{{ u.email }}</td><td>{{ u.role|capitalize }}</td>
+      <td><span class="badge {{ 'badge-green' if u.is_active else 'badge-red' }}">{{ 'Active' if u.is_active else 'Disabled' }}</span></td>
+      <td>{{ u.last_login_at|ldt }}</td>
+      <td class="actions">
+        {% if u.id != g.user.id %}
+        <form method="post" action="{{ url_for('web.user_toggle', uid=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn btn-sm {{ 'btn-danger' if u.is_active else 'btn-success' }}">{{ 'Disable' if u.is_active else 'Enable' }}</button></form>
+        <form method="post" action="{{ url_for('web.user_reset', uid=u.id) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="password" name="password" placeholder="New password" aria-label="New password for {{ u.name }}" autocomplete="new-password" required>
+          <button class="btn btn-ghost btn-sm">Reset</button></form>
+        {% else %}<span class="muted">You</span>{% endif %}
+      </td></tr>
+  {% endfor %}</tbody></table></div></section>
+{% endblock %}

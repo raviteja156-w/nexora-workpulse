@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% from '_icons.html' import icon %}
+{% block title %}Sign in{% endblock %}
+{% block body_class %}auth-page{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <section class="auth-hero">
+    <div class="brand big"><span class="logo">{{ icon('pulse', 26) }}</span><span>NEXORA <b>WORKPULSE</b></span></div>
+    <h1>Team work &amp; attendance, in one transparent place.</h1>
+    <ul class="hero-points">
+      <li>{{ icon('clock', 18) }} Server-recorded attendance and a four-hour daily target</li>
+      <li>{{ icon('tasks', 18) }} Tasks, deadlines and reviewed deliverables</li>
+      <li>{{ icon('shield', 18) }} Role-based access, audit logging, no hidden tracking</li>
+    </ul>
+    {% include '_observed.html' %}
+  </section>
+  <section class="card auth-card">
+    <h2>Sign in</h2>
+    <p class="muted">Accounts are created by your administrator.</p>
+    {% for cat, m in get_flashed_messages(with_categories=true) %}<div class="flash flash-{{ cat }}">{{ m }}</div>{% endfor %}
+    {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="{{ url_for('web.login') }}" novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" value="{{ email }}" autocomplete="username" maxlength="254" required autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="200" required>
+      <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

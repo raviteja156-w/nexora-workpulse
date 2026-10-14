@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% from '_icons.html' import icon %}
+{% block title %}Admin dashboard{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Team overview</h1><p class="muted">{{ today|ldate }} &middot; daily attendance target {{ target|hm }}</p></div>
+  <a class="btn btn-primary btn-lg" href="{{ url_for('web.task_new') }}">{{ icon('plus', 18) }} POST A TASK</a>
+</div>
+{% include '_observed.html' %}
+<div class="stats">
+  <div class="stat"><span class="stat-ic c-blue">{{ icon('users') }}</span><strong>{{ stats.members }}</strong><span>Team members</span></div>
+  <div class="stat"><span class="stat-ic c-green">{{ icon('clock') }}</span><strong>{{ stats.clocked_in }}</strong><span>Clocked in now</span></div>
+  <div class="stat"><span class="stat-ic c-cyan">{{ icon('tasks') }}</span><strong>{{ stats.tasks }}</strong><span>Total tasks</span></div>
+  <div class="stat"><span class="stat-ic c-amber">{{ icon('review') }}</span><strong>{{ stats.review }}</strong><span>Awaiting review</span></div>
+  <div class="stat"><span class="stat-ic c-blue">{{ icon('calendar') }}</span><strong>{{ target|hm }}</strong><span>Daily target</span></div>
+  <div class="stat"><span class="stat-ic c-green">{{ icon('target') }}</span><strong>{{ stats.met }}<small>/{{ stats.members }}</small></strong><span>Met the target today</span></div>
+</div>
+<section class="card">
+  <h2>Team attendance today</h2>
+  {% if not rows %}<p class="empty">No active team members yet. <a class="link" href="{{ url_for('web.user_new') }}">Create the first account</a>.</p>{% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Employee</th><th>Login</th><th>Logout</th><th>Recorded</th><th>Status</th><th>Tasks</th><th>Task progress</th><th>Acknowledgement</th></tr></thead>
+    <tbody>{% for r in rows %}
+      <tr><td><b>{{ r.user.name }}</b><br><small class="muted">{{ r.user.email }}</small></td>
+        <td>{{ r.day.first_in|ltime }}</td>
+        <td>{% if r.day.active %}<span class="badge badge-green">Active</span>{% else %}{{ r.day.last_out|ltime }}{% endif %}</td>
+        <td>{{ r.day.minutes|hm }} {% if r.met %}<span class="badge badge-green">{{ icon('check', 12) }} Target met</span>{% endif %}
+          <div class="bar thin" style="--w: {{ [100, (r.day.minutes * 100 / target)|int]|min }}"><i></i></div></td>
+        <td><span class="badge {{ 'badge-green' if r.status == 'Clocked In' else 'badge-amber' if r.status == 'On Break' else 'badge-slate' }}">{{ r.status }}</span>
+          {% if r.day.incomplete %}<span class="badge badge-red">Incomplete</span>{% endif %}</td>
+        <td>{{ r.open }} open / {{ r.tasks }}{% if r.overdue %} <span class="badge badge-red">{{ r.overdue }} overdue</span>{% endif %}</td>
+        <td>{% if r.progress is not none %}<div class="bar" style="--w: {{ r.progress }}"><i></i></div><small>{{ r.progress }}%</small>{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>{% if r.acked %}<span class="badge badge-green">Submitted</span>{% else %}<span class="badge badge-amber">Pending</span>{% endif %}</td></tr>
+    {% endfor %}</tbody></table></div>{% endif %}
+  <p class="note">Attendance duration is the server-recorded session time minus breaks. It measures attendance, not productivity; use task progress and reviewed deliverables as evidence of work.</p>
+</section>
+{% endblock %}

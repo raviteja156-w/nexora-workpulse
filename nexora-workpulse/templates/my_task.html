@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block title %}{{ a.task.title }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ a.task.title }}</h1>
+  <p><span class="badge prio-{{ a.task.priority }}">{{ PRIORITIES[a.task.priority] }}</span> <span class="badge st-{{ a.status }}">{{ STATUS[a.status] }}</span>
+  {% if is_overdue(a) %}<span class="badge badge-red">Overdue</span>{% endif %}
+  <span class="muted">Target {{ '%g' % a.task.target_hours }}h &middot; Deadline {{ a.task.deadline.strftime('%d %b %Y') }}</span></p></div>
+  <a class="btn btn-ghost" href="{{ url_for('web.dashboard') }}">Back</a></div>
+<section class="card"><h2>Brief</h2><p class="pre">{{ a.task.description }}</p>
+  {% if a.task.expected_deliverable %}<p><b>Expected deliverable:</b> {{ a.task.expected_deliverable }}</p>{% endif %}
+  {% if a.task.instructions %}<p><b>Additional instructions:</b></p><p class="pre">{{ a.task.instructions }}</p>{% endif %}</section>
+{% if a.status == 'needs_changes' and a.reviews %}<div class="flash flash-warning"><b>Changes requested:</b> <span class="pre">{{ a.reviews[0].feedback }}</span></div>{% endif %}
+<section class="card">
+  <h2>{{ 'Your submission' if locked else 'Update progress & submit work' }}</h2>
+  {% for e in errors %}<div class="flash flash-error" role="alert">{{ e }}</div>{% endfor %}
+  {% if locked %}
+    <p class="muted">{{ 'Awaiting administrator review.' if a.status == 'submitted' else 'This task was approved.' }}</p>
+    <div class="bar" style="--w: {{ a.progress }}"><i></i></div><small>{{ a.progress }}%</small>
+    {% if a.work_notes %}<p class="pre">{{ a.work_notes }}</p>{% endif %}
+    {% if a.deliverable_url %}<p><a class="link" href="{{ a.deliverable_url }}" target="_blank" rel="noopener noreferrer nofollow">{{ a.deliverable_url }}</a></p>{% endif %}
+  {% else %}
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="progress">Progress (0-100%)</label>
+    <input id="progress" name="progress" type="number" min="0" max="100" step="1" value="{{ form.get('progress', a.progress) }}" required>
+    <label for="work_notes">Work notes</label>
+    <textarea id="work_notes" name="work_notes" rows="5" maxlength="5000">{{ form.get('work_notes', a.work_notes or '') }}</textarea>
+    <label for="deliverable_url">Deliverable link (https://...)</label>
+    <input id="deliverable_url" name="deliverable_url" type="url" maxlength="500" value="{{ form.get('deliverable_url', a.deliverable_url or '') }}">
+    <div class="btn-row"><button class="btn btn-ghost" name="action" value="save">Save progress</button>
+      <button class="btn btn-primary" name="action" value="submit">Submit for review</button></div>
+  </form>{% endif %}
+  {% if a.reviews %}<details><summary>Review history</summary>{% for r in a.reviews %}<p class="review"><span class="badge {{ 'badge-green' if r.decision == 'approved' else 'badge-amber' }}">{{ 'Approved' if r.decision == 'approved' else 'Changes requested' }}</span> {{ r.created_at|ldt }}{% if r.feedback %}<br><span class="pre">{{ r.feedback }}</span>{% endif %}</p>{% endfor %}</details>{% endif %}
+</section>
+{% endblock %}

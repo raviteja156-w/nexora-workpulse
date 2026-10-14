@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}{{ task.title }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>{{ task.title }}</h1>
+  <p><span class="badge prio-{{ task.priority }}">{{ PRIORITIES[task.priority] }}</span> <span class="muted">Target {{ '%g' % task.target_hours }}h &middot; {{ task.start_date.strftime('%d %b') }} to {{ task.deadline.strftime('%d %b %Y') }}</span></p></div>
+  <a class="btn btn-ghost" href="{{ url_for('web.task_edit', tid=task.id) }}">Edit / reassign</a></div>
+<section class="card">
+  <h2>Brief</h2><p class="pre">{{ task.description }}</p>
+  {% if task.expected_deliverable %}<p><b>Expected deliverable:</b> {{ task.expected_deliverable }}</p>{% endif %}
+  {% if task.instructions %}<p><b>Additional instructions:</b></p><p class="pre">{{ task.instructions }}</p>{% endif %}
+  <p class="note">Task targets are separate from attendance. Four recorded hours do not mean this task is complete; review the submitted work below.</p>
+</section>
+{% for a in assignments %}
+<section class="card">
+  <h2>{{ a.user.name }} <span class="badge st-{{ a.status }}">{{ STATUS[a.status] }}</span>{% if is_overdue(a) %} <span class="badge badge-red">Overdue</span>{% endif %}</h2>
+  <div class="bar" style="--w: {{ a.progress }}"><i></i></div><small>{{ a.progress }}% complete{% if a.submitted_at %} &middot; submitted {{ a.submitted_at|ldt }}{% endif %}</small>
+  {% if a.work_notes %}<p><b>Work notes</b></p><p class="pre">{{ a.work_notes }}</p>{% endif %}
+  {% if a.deliverable_url %}<p><b>Deliverable:</b> <a class="link" href="{{ a.deliverable_url }}" target="_blank" rel="noopener noreferrer nofollow">{{ a.deliverable_url }}</a></p>{% endif %}
+  {% if a.status == 'submitted' %}
+  <form method="post" action="{{ url_for('web.review', aid=a.id) }}" class="stack review-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="fb{{ a.id }}">Feedback (required when requesting changes)</label>
+    <textarea id="fb{{ a.id }}" name="feedback" rows="2" maxlength="3000"></textarea>
+    <div class="btn-row"><button class="btn btn-success" name="decision" value="approved">Approve work</button>
+      <button class="btn btn-danger" name="decision" value="changes">Request changes</button></div>
+  </form>{% endif %}
+  {% if a.reviews %}<details><summary>Review history ({{ a.reviews|length }})</summary>
+    {% for r in a.reviews %}<p class="review"><span class="badge {{ 'badge-green' if r.decision == 'approved' else 'badge-amber' }}">{{ 'Approved' if r.decision == 'approved' else 'Changes requested' }}</span>
+      {{ r.reviewer.name }}, {{ r.created_at|ldt }}{% if r.feedback %}<br><span class="pre">{{ r.feedback }}</span>{% endif %}</p>{% endfor %}</details>{% endif %}
+</section>
+{% else %}<p class="empty card">Nobody is assigned to this task.</p>{% endfor %}
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Attendance &amp; productivity report</h1><p class="muted">{{ start|ldate }} to {{ end|ldate }}</p></div>
+  <a class="btn btn-ghost" href="{{ url_for('web.reports_export', range=rng, start=start.isoformat(), end=end.isoformat(), user_id=uid) }}">Export CSV (opens in Excel)</a></div>
+<form method="get" class="card filters">
+  <div><label for="range">Period</label><select id="range" name="range">{% for k, l in [('today','Today'),('week','This week'),('month','This month'),('custom','Custom dates')] %}<option value="{{ k }}" {{ 'selected' if rng == k }}>{{ l }}</option>{% endfor %}</select></div>
+  <div><label for="start">From (custom)</label><input id="start" name="start" type="date" value="{{ start.isoformat() }}"></div>
+  <div><label for="end">To (custom)</label><input id="end" name="end" type="date" value="{{ end.isoformat() }}"></div>
+  <div><label for="user_id">Employee</label><select id="user_id" name="user_id"><option value="">All employees</option>{% for m in members %}<option value="{{ m.id }}" {{ 'selected' if uid == m.id|string }}>{{ m.name }}</option>{% endfor %}</select></div>
+  <button class="btn btn-primary">Apply</button>
+</form>
+{% for e in errors %}<div class="flash flash-error" role="alert">{{ e }}</div>{% endfor %}
+<section class="card"><h2>Summary by employee</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Employee</th><th>Days present</th><th>Total recorded</th><th>Days target met ({{ target|hm }})</th><th>Assigned</th><th>Submitted</th><th>Completed</th><th>Pending</th><th>Acknowledgement days</th></tr></thead>
+    <tbody>{% for s in summary %}<tr><td><b>{{ s.user.name }}</b></td><td>{{ s.days }}</td><td>{{ s.minutes|hm }}</td><td>{{ s.met }}</td><td>{{ s.assigned }}</td><td>{{ s.submitted }}</td><td>{{ s.completed }}</td><td>{{ s.pending }}</td><td>{{ s.acks }}</td></tr>
+    {% else %}<tr><td colspan="9" class="empty">No team members.</td></tr>{% endfor %}</tbody></table></div>
+  <p class="note">Task counts cover tasks whose start-to-deadline window overlaps this period. Task completion is tracked separately from attendance.</p></section>
+<section class="card"><h2>Daily detail</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Date</th><th>Employee</th><th>Login</th><th>Logout</th><th>Recorded</th><th>Target</th><th>Acknowledgement</th></tr></thead>
+    <tbody>{% for r in detail %}<tr><td>{{ r.date.strftime('%d %b %Y') }}</td><td>{{ r.user.name }}</td><td>{{ r.day.first_in|ltime }}</td>
+      <td>{% if r.day.active %}<span class="badge badge-green">Active</span>{% else %}{{ r.day.last_out|ltime }}{% endif %}</td>
+      <td>{{ r.day.minutes|hm }}{% if r.day.incomplete %} <span class="badge badge-red">Incomplete</span>{% endif %}</td>
+      <td><span class="badge {{ 'badge-green' if r.met else 'badge-amber' }}">{{ 'Achieved' if r.met else 'Not met' }}</span></td>
+      <td><span class="badge {{ 'badge-green' if r.acked else 'badge-amber' }}">{{ 'Submitted' if r.acked else 'Missing' }}</span></td></tr>
+    {% else %}<tr><td colspan="7" class="empty">No attendance recorded for this selection.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

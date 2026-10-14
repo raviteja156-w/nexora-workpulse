@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Edit task' if task else 'Post a task' }}{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>{{ 'Edit & reassign task' if task else 'Post a task' }}</h1>
+  {% for e in errors %}<div class="flash flash-error" role="alert">{{ e }}</div>{% endfor %}
+  <form method="post" class="stack" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="title">Task title *</label><input id="title" name="title" value="{{ v.get('title','') }}" maxlength="150" required>
+    <label for="description">Detailed description *</label><textarea id="description" name="description" rows="5" maxlength="5000" required>{{ v.get('description','') }}</textarea>
+    <div class="grid-4">
+      <div><label for="priority">Priority</label><select id="priority" name="priority">{% for k, lbl in PRIORITIES.items() %}<option value="{{ k }}" {{ 'selected' if v.get('priority') == k }}>{{ lbl }}</option>{% endfor %}</select></div>
+      <div><label for="target_hours">Target hours *</label><input id="target_hours" name="target_hours" type="number" step="0.25" min="0.25" max="200" value="{{ v.get('target_hours','') }}" required></div>
+      <div><label for="start_date">Start date *</label><input id="start_date" name="start_date" type="date" value="{{ v.get('start_date','') }}" required></div>
+      <div><label for="deadline">Deadline *</label><input id="deadline" name="deadline" type="date" value="{{ v.get('deadline','') }}" required></div>
+    </div>
+    <label for="expected_deliverable">Expected deliverable</label><input id="expected_deliverable" name="expected_deliverable" value="{{ v.get('expected_deliverable','') }}" maxlength="1000">
+    <label for="instructions">Additional instructions</label><textarea id="instructions" name="instructions" rows="3" maxlength="3000">{{ v.get('instructions','') }}</textarea>
+    <fieldset>
+      <legend>Assign to</legend>
+      <label class="check"><input type="checkbox" name="all_team" value="1" {{ 'checked' if all_team }}> Entire team (all active members)</label>
+      <div class="check-grid">{% for m in members %}
+        <label class="check"><input type="checkbox" name="assignees" value="{{ m.id }}" {{ 'checked' if m.id in selected }}> {{ m.name }}</label>
+      {% else %}<p class="empty">No active team members. Create accounts first.</p>{% endfor %}</div>
+      {% if task %}<p class="note">Unchecking a member removes the task only if they have not started it. Members with work in progress are kept.</p>{% endif %}
+    </fieldset>
+    <div><button class="btn btn-primary" type="submit">{{ 'Save changes' if task else 'Post task' }}</button> <a class="btn btn-ghost" href="{{ url_for('web.tasks') }}">Cancel</a></div>
+  </form>
+</div>
+{% endblock %}

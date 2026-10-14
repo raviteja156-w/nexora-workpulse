@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% from '_icons.html' import icon %}
+{% block title %}Tasks{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Tasks</h1><a class="btn btn-primary" href="{{ url_for('web.task_new') }}">{{ icon('plus', 18) }} POST A TASK</a></div>
+<section class="card">
+  {% if not tasks %}<p class="empty">No tasks yet. Post the first task to give your team a target.</p>{% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Target</th><th>Deadline</th><th>Assigned</th><th>Awaiting review</th><th>Completed</th><th></th></tr></thead>
+    <tbody>{% for t in tasks %}
+      <tr><td><b>{{ t.title }}</b></td><td><span class="badge prio-{{ t.priority }}">{{ PRIORITIES[t.priority] }}</span></td>
+        <td>{{ '%g' % t.target_hours }}h</td><td>{{ t.deadline.strftime('%d %b %Y') }}</td>
+        <td>{{ t.assignments|length }}</td>
+        <td>{{ t.assignments|selectattr('status', 'equalto', 'submitted')|list|length }}</td>
+        <td>{{ t.assignments|selectattr('status', 'equalto', 'completed')|list|length }}</td>
+        <td class="actions"><a class="btn btn-ghost btn-sm" href="{{ url_for('web.task_detail', tid=t.id) }}">Open</a>
+          <a class="btn btn-ghost btn-sm" href="{{ url_for('web.task_edit', tid=t.id) }}">Edit</a></td></tr>
+    {% endfor %}</tbody></table></div>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block title %}My attendance{% endblock %}
+{% block content %}
+<div class="page-head"><h1>My attendance history</h1></div>
+<p class="note">Last 30 days. A session counts toward the day it started. Duration = clock-out minus clock-in minus breaks, calculated on the server.</p>
+{% for d, v in days %}
+<section class="card">
+  <h2>{{ d|ldate }} <span class="badge {{ 'badge-green' if v.minutes >= target else 'badge-amber' }}">{{ v.minutes|hm }}{{ ' — target met' if v.minutes >= target else '' }}</span>
+  {% if v.incomplete %}<span class="badge badge-red">Incomplete session</span>{% endif %}</h2>
+  <div class="table-wrap"><table><thead><tr><th>Clock in</th><th>Clock out</th><th>Breaks</th><th>Recorded</th></tr></thead><tbody>
+  {% for s in v.sessions %}<tr><td>{{ s.clock_in|ltime }}</td><td>{% if s.clock_out %}{{ s.clock_out|ltime }}{% else %}<span class="badge badge-green">Active</span>{% endif %}</td>
+    <td>{{ s.breaks|length }}</td><td>{{ session_mins(s)|hm }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% else %}<p class="empty card">No attendance has been recorded in the last 30 days.</p>{% endfor %}
+{% endblock %}

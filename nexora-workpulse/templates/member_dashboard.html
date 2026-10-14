@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+{% from '_icons.html' import icon %}
+{% block title %}My dashboard{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Welcome, {{ g.user.name.split(' ')[0] }}</h1><p class="muted">Here is your day at a glance.</p></div></div>
+{% include '_observed.html' %}
+
+{% if overdue %}<div class="flash flash-error" role="alert">{{ icon('alert', 18) }} {{ overdue|length }} task(s) are overdue. Update progress or submit them for review.</div>{% endif %}
+{% if not ack_today and (day.active or minutes > 0) %}<div class="flash flash-warning" role="alert">{{ icon('alert', 18) }} You have not submitted today's work acknowledgement yet.</div>{% endif %}
+{% if day.incomplete %}<div class="flash flash-warning" role="alert">{{ icon('alert', 18) }} One of today's sessions is flagged incomplete (it ran past the maximum length). Clock out to close it.</div>{% endif %}
+
+<div class="grid-2">
+  <section class="card clock-card">
+    <h2>Attendance</h2>
+    <div class="ring-wrap">
+      <div class="ring" style="--p: {{ pct }}"><div class="ring-in"><strong>{{ minutes|hm }}</strong><span>of {{ target|hm }}</span></div></div>
+      <div class="ring-info">
+        <span class="badge badge-{{ 'green' if status == 'Clocked In' else 'amber' if status == 'On Break' else 'slate' }}">{{ status }}</span>
+        {% if minutes >= target %}<span class="badge badge-green">{{ icon('check', 14) }} Target achieved</span>
+        {% else %}<p class="muted"><b>{{ remaining|hm }}</b> remaining to reach the {{ target|hm }} target.</p>{% endif %}
+        {% if day.first_in %}<p class="muted">First login today: {{ day.first_in|ltime }}</p>{% endif %}
+      </div>
+    </div>
+    <div class="btn-row">
+      {% if day.active %}
+        <form method="post" action="{{ url_for('web.clock_out') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-danger">Clock out</button></form>
+        {% if day.on_break %}
+          <form method="post" action="{{ url_for('web.break_end') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary">End break</button></form>
+        {% else %}
+          <form method="post" action="{{ url_for('web.break_start') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-ghost">Start break</button></form>
+        {% endif %}
+      {% else %}
+        <form method="post" action="{{ url_for('web.clock_in') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-success">Clock in</button></form>
+      {% endif %}
+    </div>
+    <p class="note">Times are recorded by the server. Recorded duration measures attendance, not continuous productivity; task updates and deliverables are the evidence of work.</p>
+  </section>
+
+  <section class="card">
+    <h2>Last 7 days</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th>In</th><th>Out</th><th>Recorded</th><th>Target</th></tr></thead>
+      <tbody>{% for d, v in history %}
+        <tr><td>{{ d.strftime('%a %d %b') }}</td><td>{{ v.first_in|ltime }}</td>
+          <td>{% if v.active %}<span class="badge badge-green">Active</span>{% else %}{{ v.last_out|ltime }}{% endif %}</td>
+          <td>{{ v.minutes|hm }}</td>
+          <td>{% if v.minutes >= target %}<span class="badge badge-green">Met</span>{% elif v.sessions %}<span class="badge badge-amber">Below</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>
+      {% endfor %}</tbody></table></div>
+    <a class="link" href="{{ url_for('web.attendance_history') }}">Full attendance history</a>
+  </section>
+</div>
+
+<section class="card">
+  <h2>My tasks</h2>
+  {% if not assignments %}<p class="empty">No tasks are assigned to you yet. Your administrator will post them here.</p>{% else %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Target</th><th>Deadline</th><th>Progress</th><th>Status</th><th></th></tr></thead>
+    <tbody>{% for a in assignments %}
+      <tr><td><b>{{ a.task.title }}</b></td>
+        <td><span class="badge prio-{{ a.task.priority }}">{{ PRIORITIES[a.task.priority] }}</span></td>
+        <td>{{ '%g' % a.task.target_hours }}h</td>
+        <td>{{ a.task.deadline.strftime('%d %b %Y') }}{% if is_overdue(a) %} <span class="badge badge-red">Overdue</span>{% endif %}</td>
+        <td><div class="bar" style="--w: {{ a.progress }}"><i></i></div><small>{{ a.progress }}%</small></td>
+        <td><span class="badge st-{{ a.status }}">{{ STATUS[a.status] }}</span></td>
+        <td><a class="btn btn-ghost btn-sm" href="{{ url_for('web.my_task', aid=a.id) }}">{{ 'View' if a.status in ('submitted','completed') else 'Update / submit' }}</a></td></tr>
+    {% endfor %}</tbody></table></div>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Daily work acknowledgement {% if ack_today %}<span class="badge badge-green">Submitted today</span>{% else %}<span class="badge badge-amber">Not yet submitted</span>{% endif %}</h2>
+  {% include '_ack_form.html' %}
+</section>
+{% endblock %}

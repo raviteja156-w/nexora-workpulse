@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}Acknowledgements{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Daily work acknowledgements</h1></div>
+<form method="get" class="card filters">
+  <div><label for="user_id">Employee</label><select id="user_id" name="user_id"><option value="">All</option>{% for m in members %}<option value="{{ m.id }}" {{ 'selected' if f.get('user_id') == m.id|string }}>{{ m.name }}</option>{% endfor %}</select></div>
+  <div><label for="start">From</label><input id="start" name="start" type="date" value="{{ f.get('start','') }}"></div>
+  <div><label for="end">To</label><input id="end" name="end" type="date" value="{{ f.get('end','') }}"></div>
+  <button class="btn btn-primary">Filter</button>
+</form>
+{% for x in items %}
+<section class="card"><h2>{{ x.user.name }} <span class="muted">{{ x.ack_date|ldate }} &middot; submitted {{ x.created_at|ldt }}</span></h2>
+  <div class="grid-2"><div><b>Tasks worked on</b><p class="pre">{{ x.tasks_worked }}</p><b>Work completed</b><p class="pre">{{ x.work_completed }}</p>
+    {% if x.deliverable_links %}<b>Deliverable links</b><p class="pre">{{ x.deliverable_links }}</p>{% endif %}</div>
+  <div>{% if x.problems %}<b>Problems</b><p class="pre">{{ x.problems }}</p>{% endif %}{% if x.pending_work %}<b>Pending work</b><p class="pre">{{ x.pending_work }}</p>{% endif %}{% if x.next_steps %}<b>Next steps</b><p class="pre">{{ x.next_steps }}</p>{% endif %}</div></div>
+</section>
+{% else %}<p class="empty card">No acknowledgements match these filters.</p>{% endfor %}
+{% endblock %}

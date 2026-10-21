@@ -10,6 +10,7 @@
       <td>{{ u.last_login_at|ldt }}</td>
       <td class="actions">
         {% if u.id != g.user.id %}
+        <a class="btn btn-ghost btn-sm" href="{{ url_for('web.user_edit', uid=u.id) }}">Edit</a>
         <form method="post" action="{{ url_for('web.user_toggle', uid=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button class="btn btn-sm {{ 'btn-danger' if u.is_active else 'btn-success' }}">{{ 'Disable' if u.is_active else 'Enable' }}</button></form>
         <form method="post" action="{{ url_for('web.user_reset', uid=u.id) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

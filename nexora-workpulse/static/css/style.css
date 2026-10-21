@@ -155,3 +155,36 @@ fieldset{border:1px solid var(--line);border-radius:14px;padding:6px 16px 14px;m
   h1{font-size:1.45rem}.auth-hero h1{font-size:1.7rem}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* Project-control visual system: static navy canvas, vivid accent surfaces, reduced-motion safe. */
+body{background:var(--bg);background-attachment:initial}
+.bg-orbs{display:none}
+.project-hero{overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) 170px;align-items:center;gap:12px;background:#101c42;border-color:rgba(76,201,240,.28);min-height:190px}
+.project-hero .eyebrow{display:inline-block;color:#70e1f2;font-size:.75rem;letter-spacing:.16em;font-weight:800;margin-bottom:8px}
+.project-hero h1{font-size:clamp(1.8rem,4vw,2.65rem);background:linear-gradient(90deg,#fff,#7de8f2 55%,#9fbbff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.project-hero p{max-width:680px;color:#b8c8eb}
+.project-hero .btn-row{grid-column:1/-1}
+.hero-art{height:150px;width:150px;position:relative;display:grid;place-items:center;justify-self:center}
+.hero-glyph{display:grid;place-items:center;width:76px;height:76px;border-radius:24px;font-size:3rem;color:#fff;background:linear-gradient(145deg,#386bff,#20c9e8);box-shadow:0 14px 40px #2058b866;animation:hero-float 4s ease-in-out infinite}
+.orbit{position:absolute;border:1px solid #6fe7f288;border-radius:50%;inset:5px;animation:orbit-spin 14s linear infinite}
+.orbit-two{inset:19px;border-style:dashed;border-color:#9c8cff99;animation-direction:reverse;animation-duration:20s}
+@keyframes hero-float{0%,100%{transform:translateY(0) rotate(-3deg)}50%{transform:translateY(-7px) rotate(3deg)}}
+@keyframes orbit-spin{to{transform:rotate(360deg)}}
+.workflow-list{display:grid;gap:14px}
+.workflow-stage{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:14px;align-items:start;padding:18px;border:1px solid var(--line);border-radius:16px;background:#0d1734;transition:transform .2s,border-color .2s}
+.workflow-stage:hover{transform:translateY(-2px);border-color:#38c9e8aa}
+.stage-number{display:grid;place-items:center;width:40px;height:40px;border-radius:13px;background:linear-gradient(140deg,#3e6bff,#22cbe6);font-weight:800;color:white}
+.stage-fields{display:grid;grid-template-columns:2fr 1.2fr .8fr .8fr 1.4fr;gap:10px}
+.stage-form label{margin-top:8px}.stage-form textarea{margin-bottom:4px}
+.workflow-public{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.public-stage{display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;padding:16px;border-radius:15px;background:#0c1630;border:1px solid #29385d;min-width:0}
+.public-stage .bar{grid-column:2;margin:4px 0 0}.public-stage-dot{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:#253252;color:#b9c9ec;font-weight:800}
+.public-stage.is-current{border-color:#26cce5;box-shadow:0 0 0 1px #26cce522}.public-stage.is-current .public-stage-dot{background:#087f9a;color:white}
+.public-stage.is-complete{border-color:#169d77aa}.public-stage.is-complete .public-stage-dot{background:#087e5b;color:white}
+.public-stage.is-blocked{border-color:#e9a33d99}
+.submission-card{padding:16px 0;border-bottom:1px solid var(--line)}.submission-card:last-child{border-bottom:0}
+.submission-card h3{margin:0;font-size:1rem}.agreement-body{white-space:pre-wrap;line-height:1.8;padding:18px;background:#0c1630;border:1px solid var(--line);border-radius:14px;overflow-wrap:anywhere}
+.confirmation-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+@media(max-width:900px){.stage-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.workflow-public{grid-template-columns:1fr}.project-hero{grid-template-columns:minmax(0,1fr) 110px}.hero-art{width:100px;height:100px}.hero-glyph{width:58px;height:58px;font-size:2.3rem}}
+@media(max-width:560px){.project-hero{grid-template-columns:1fr}.hero-art{display:none}.stage-fields{grid-template-columns:1fr}.workflow-stage{grid-template-columns:34px minmax(0,1fr)}.workflow-stage>form:last-child{grid-column:2}.stage-number{width:34px;height:34px}}
+@media(prefers-reduced-motion:reduce){.hero-glyph,.orbit{animation:none!important}}

@@ -24,8 +24,11 @@
       <a href="{{ url_for('web.acknowledgements') }}" class="{{ 'on' if ep == 'web.acknowledgements' }}">Acknowledgements</a>
       <a href="{{ url_for('web.reports') }}" class="{{ 'on' if ep == 'web.reports' }}">Reports</a>
       <a href="{{ url_for('web.audit_log') }}" class="{{ 'on' if ep == 'web.audit_log' }}">Audit</a>
-    {% else %}
+      <a href="{{ url_for('web.project_admin') }}" class="{{ 'on' if ep.startswith('web.project_') }}">Project Control</a>
+    {% elif g.user.role == 'member' %}
       <a href="{{ url_for('web.attendance_history') }}" class="{{ 'on' if ep == 'web.attendance_history' }}">Attendance</a>
+    {% else %}
+      <a href="{{ url_for('web.project_agreement') }}" class="{{ 'on' if ep == 'web.project_agreement' }}">Agreement</a>
     {% endif %}
     <a href="{{ url_for('web.change_password') }}" class="{{ 'on' if ep == 'web.change_password' }}">Password</a>
     <form method="post" action="{{ url_for('web.logout') }}" class="nav-user">

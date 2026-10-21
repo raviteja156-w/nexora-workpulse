@@ -16,17 +16,18 @@ from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Blueprint, Flask, Response, abort, current_app, flash, g, redirect,
-                   render_template, request, session, url_for)
+                   render_template, request, session, url_for, send_from_directory, send_file)
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFError, CSRFProtect
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from models import (Acknowledgement, Assignment, AssignmentReview, AttendanceSession, AuditLog,
-                    BreakRecord, Task, User, db, utcnow)
+from models import (Acknowledgement, AgreementConfirmation, Assignment, AssignmentReview, AttendanceSession, AuditLog,
+                    BreakRecord, ProjectAgreement, ProjectFile, ProjectStage, ProjectUpdate, ProjectNotice, ProjectNoticeAcknowledgement, Task, User, db, utcnow)
 
 
 class ConfigError(RuntimeError):
@@ -92,6 +93,7 @@ def load_config():
         "DAILY_TARGET_MINUTES": int(hours * 60),
         "SESSION_MAX_HOURS": max_hours,
         "DEV_MODE": dev,
+        "LIVE_APPLICATION_URL": os.environ.get("LIVE_APPLICATION_URL", "").strip(),
         "SESSION_COOKIE_SECURE": not dev,
     }
 
@@ -109,7 +111,7 @@ def create_app(test_config=None):
         app.config.update(test_config)
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
-        PERMANENT_SESSION_LIFETIME=timedelta(hours=8), MAX_CONTENT_LENGTH=256 * 1024,
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=8), MAX_CONTENT_LENGTH=25 * 1024 * 1024,
         WTF_CSRF_TIME_LIMIT=None, SQLALCHEMY_TRACK_MODIFICATIONS=False,
     )
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # Render terminates TLS
@@ -306,6 +308,7 @@ def role_required(role):
 
 admin_required = role_required("admin")
 member_required = role_required("member")
+PROJECT_ROLES = {"admin", "founder", "connector", "member"}
 
 
 @bp.route("/")
@@ -386,7 +389,11 @@ def change_password():
 @bp.route("/dashboard")
 @login_required
 def dashboard():
-    return admin_dashboard() if g.user.role == "admin" else member_dashboard()
+    if g.user.role == "admin":
+        return admin_dashboard()
+    if g.user.role in {"founder", "connector"}:
+        return project_view_dashboard()
+    return member_dashboard()
 
 
 def member_dashboard():
@@ -404,8 +411,23 @@ def member_dashboard():
         "member_dashboard.html", day=day, status=attendance_status(day), minutes=minutes,
         target=tgt, remaining=max(tgt - minutes, 0), pct=min(100, int(minutes * 100 / tgt)),
         assignments=assignments, overdue=[a for a in assignments if is_overdue(a)],
-        ack_today=ack_today, history=history, values={}, errors=[])
+        ack_today=ack_today, history=history, values={}, errors=[], live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip(),
+        project_stages=ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all(),
+        approved_project_updates=ProjectUpdate.query.filter_by(status="approved").order_by(ProjectUpdate.reviewed_at.desc()).limit(10).all(),
+        member_project_files=ProjectFile.query.filter_by(submitted_by=g.user.id).order_by(ProjectFile.uploaded_at.desc()).limit(30).all(),
+        project_notices=ProjectNotice.query.order_by(ProjectNotice.created_at.desc()).limit(30).all(),
+        acknowledged_notice_ids={r[0] for r in db.session.query(ProjectNoticeAcknowledgement.notice_id).filter_by(user_id=g.user.id).all()})
 
+
+def project_view_dashboard():
+    _ensure_project_stages()
+    stages = ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all()
+    updates = ProjectUpdate.query.filter_by(status="approved").order_by(ProjectUpdate.reviewed_at.desc()).limit(30).all()
+    files = ProjectFile.query.filter_by(status="approved").order_by(ProjectFile.uploaded_at.desc()).limit(30).all()
+    agreement = ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first()
+    confirmations = AgreementConfirmation.query.filter_by(agreement_id=agreement.id).all() if agreement else []
+    return render_template("project_dashboard.html", stages=stages, updates=updates, files=files,
+                           agreement=agreement, confirmations=confirmations, live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip())
 
 def admin_dashboard():
     now, today = utcnow(), local_today()
@@ -431,7 +453,12 @@ def admin_dashboard():
         tasks=Task.query.count(),
         review=Assignment.query.filter_by(status="submitted").count(),
         met=sum(1 for r in rows if r["met"]))
-    return render_template("admin_dashboard.html", rows=rows, stats=stats, target=target_minutes(), today=today)
+    return render_template("admin_dashboard.html", rows=rows, stats=stats, target=target_minutes(), today=today,
+                           project_stages=ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all(),
+                           project_updates=ProjectUpdate.query.order_by(ProjectUpdate.created_at.desc()).limit(15).all(),
+                           project_files=ProjectFile.query.order_by(ProjectFile.uploaded_at.desc()).limit(15).all(),
+                           agreement=ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first(),
+                           live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip())
 
 
 # --------------------------------------------------------------------------- attendance (members)
@@ -600,6 +627,9 @@ def user_new():
     errors, v = [], {"name": "", "email": ""}
     if request.method == "POST":
         v = {"name": clean(request.form.get("name"), 80), "email": clean(request.form.get("email"), 254).lower()}
+        role = clean(request.form.get("role"), 10).lower()
+        if role not in {"member", "founder", "connector"}:
+            role = "member"
         pw, confirm = request.form.get("password", ""), request.form.get("confirm_password", "")
         if len(v["name"]) < 2:
             errors.append("Name must be at least 2 characters.")
@@ -612,7 +642,7 @@ def user_new():
             errors.append(err)
         if not errors:
             try:
-                u = User(name=v["name"], email=v["email"], role="member", password_hash=generate_password_hash(pw))
+                u = User(name=v["name"], email=v["email"], role=role, password_hash=generate_password_hash(pw))
                 db.session.add(u)
                 db.session.flush()
                 audit("user_created", f"user={u.id} email={u.email}")
@@ -624,6 +654,30 @@ def user_new():
                 errors.append("An account with this email already exists.")
     return render_template("user_form.html", errors=errors, v=v, min_length=MIN_PASSWORD)
 
+
+@bp.route("/admin/users/<int:uid>/edit", methods=["GET", "POST"])
+@admin_required
+def user_edit(uid):
+    user = db.session.get(User, uid) or abort(404)
+    if user.role == "admin":
+        abort(403)
+    errors = []
+    if request.method == "POST":
+        name = clean(request.form.get("name"), 80)
+        email = clean(request.form.get("email"), 254).lower()
+        role = clean(request.form.get("role"), 10).lower()
+        other = User.query.filter(User.email == email, User.id != user.id).first()
+        if len(name) < 2: errors.append("Name must be at least 2 characters.")
+        if not EMAIL_RE.match(email): errors.append("Enter a valid email address.")
+        elif other: errors.append("That email address is already in use.")
+        if role not in {"member", "founder", "connector"}: errors.append("Choose a valid non-admin role.")
+        if not errors:
+            user.name, user.email, user.role = name, email, role
+            user.session_version += 1
+            audit("user_updated", f"user={user.id}; role={role}", g.user.id)
+            db.session.commit(); flash("Account updated. The user must sign in again.", "success")
+            return redirect(url_for("web.users"))
+    return render_template("user_edit.html", account=user, errors=errors)
 
 @bp.route("/admin/users/<int:uid>/toggle", methods=["POST"])
 @admin_required
@@ -949,6 +1003,270 @@ def register_errors(app):
         return page(500, "Something went wrong", "An unexpected error occurred. Nothing has been exposed; please try again.")
 
 
+# --------------------------------------------------------------------------- project workflow, submissions and agreement
+DEFAULT_STAGES = ["Requirements", "Development", "File Submission", "Admin Review", "Corrections", "Testing", "Deployment", "Final Delivery"]
+ALLOWED_UPLOAD_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "zip", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "md", "py", "js", "css", "html", "json"}
+
+def _ensure_project_stages():
+    if ProjectStage.query.count() == 0:
+        for i, name in enumerate(DEFAULT_STAGES):
+            db.session.add(ProjectStage(name=name, position=i, status="current" if i == 0 else "upcoming", progress=0, admin_approved=True))
+        db.session.commit()
+
+@bp.route("/admin/project")
+@admin_required
+def project_admin():
+    _ensure_project_stages()
+    stages = ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all()
+    updates = ProjectUpdate.query.order_by(ProjectUpdate.created_at.desc()).all()
+    files = ProjectFile.query.order_by(ProjectFile.uploaded_at.desc()).all()
+    agreement = ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first()
+    notices = ProjectNotice.query.order_by(ProjectNotice.created_at.desc()).limit(30).all()
+    active_members = User.query.filter_by(role="member", is_active=True).order_by(User.name).all()
+    notice_ack_counts = {n.id: ProjectNoticeAcknowledgement.query.filter_by(notice_id=n.id).count() for n in notices}
+    notice_ack_user_ids = {n.id: [r[0] for r in db.session.query(ProjectNoticeAcknowledgement.user_id).filter_by(notice_id=n.id).all()] for n in notices}
+    return render_template("project_admin.html", stages=stages, updates=updates, files=files, agreement=agreement,
+                           notices=notices, active_members=active_members, notice_ack_counts=notice_ack_counts,
+                           notice_ack_user_ids=notice_ack_user_ids,
+                           live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip())
+
+@bp.route("/admin/project/stages", methods=["POST"])
+@admin_required
+def project_stage_create():
+    name = clean(request.form.get("name"), 120)
+    if not name:
+        flash("Stage name is required.", "error")
+        return redirect(url_for("web.project_admin"))
+    pos = (db.session.query(func.max(ProjectStage.position)).scalar() or -1) + 1
+    db.session.add(ProjectStage(name=name, description=clean(request.form.get("description"), 20000), position=pos, status="upcoming", progress=0, updated_by=g.user.id, admin_approved=True))
+    audit("project_stage_created", name, g.user.id); db.session.commit()
+    flash("Workflow stage created.", "success")
+    return redirect(url_for("web.project_admin"))
+
+@bp.route("/admin/project/stages/<int:sid>", methods=["POST"])
+@admin_required
+def project_stage_update(sid):
+    stage = db.session.get(ProjectStage, sid) or abort(404)
+    name = clean(request.form.get("name"), 120)
+    status = clean(request.form.get("status"), 20)
+    try: position = int(request.form.get("position", stage.position))
+    except ValueError: position = stage.position
+    try: progress = max(0, min(100, int(request.form.get("progress", stage.progress))))
+    except ValueError: progress = stage.progress
+    if not name or status not in {"upcoming", "current", "completed", "blocked", "awaiting_approval"}:
+        flash("Enter a stage name and valid status.", "error"); return redirect(url_for("web.project_admin"))
+    stage.name, stage.description, stage.position = name, clean(request.form.get("description"), 20000), max(0, position)
+    stage.status, stage.progress = status, progress
+    stage.responsible_person = clean(request.form.get("responsible_person"), 120)
+    stage.updated_by, stage.admin_approved = g.user.id, True
+    audit("project_stage_updated", f"stage={sid}; name={name}; status={status}; progress={progress}", g.user.id)
+    db.session.commit(); flash("Workflow stage updated.", "success")
+    return redirect(url_for("web.project_admin"))
+
+@bp.route("/admin/project/stages/<int:sid>/delete", methods=["POST"])
+@admin_required
+def project_stage_delete(sid):
+    stage = db.session.get(ProjectStage, sid) or abort(404)
+    audit("project_stage_deleted", f"stage={sid}; name={stage.name}", g.user.id)
+    db.session.delete(stage); db.session.commit(); flash("Workflow stage deleted.", "success")
+    return redirect(url_for("web.project_admin"))
+
+@bp.route("/project/submit", methods=["POST"])
+@login_required
+def project_submit():
+    title = clean(request.form.get("title"), 200); description = clean(request.form.get("description"), 200000)
+    if not title or not description:
+        flash("A title and description are required.", "error"); return redirect(url_for("web.dashboard"))
+    item = ProjectUpdate(title=title, description=description, submitted_by=g.user.id, status="pending")
+    db.session.add(item); db.session.flush()
+    audit("project_update_submitted", f"update={item.id}", g.user.id); db.session.commit()
+    flash("Your update is pending Admin review.", "success"); return redirect(url_for("web.dashboard"))
+
+@bp.route("/admin/project/updates/<int:uid>/review", methods=["POST"])
+@admin_required
+def project_update_review(uid):
+    item = db.session.get(ProjectUpdate, uid) or abort(404)
+    decision = clean(request.form.get("decision"), 20)
+    if decision not in {"approved", "rejected", "corrections"}: abort(400)
+    item.status, item.reviewer_comment, item.reviewed_by, item.reviewed_at = decision, clean(request.form.get("comment"), 10000), g.user.id, utcnow()
+    audit("project_update_reviewed", f"update={uid}; decision={decision}", g.user.id); db.session.commit()
+    flash("Submission review saved.", "success"); return redirect(url_for("web.project_admin"))
+
+# --------------------------------------------------------------------------- project file uploads and member update notices
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
+
+
+def _project_upload_dir():
+    folder = Path(current_app.instance_path) / "nwp_uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _allowed_upload(filename, allowed=ALLOWED_UPLOAD_EXTENSIONS):
+    return bool(filename and "." in filename and filename.rsplit(".", 1)[1].lower() in allowed)
+
+
+@bp.route("/project/files/upload", methods=["POST"])
+@login_required
+def project_file_upload():
+    if g.user.role != "member":
+        abort(403)
+    uploaded = request.files.get("file")
+    title = clean(request.form.get("title"), 200)
+    repo_path = clean(request.form.get("file_path"), 1000)
+    notes = clean(request.form.get("submission_notes"), 10000)
+    if not uploaded or not uploaded.filename:
+        flash("Choose a file to upload.", "error")
+        return redirect(url_for("web.dashboard"))
+    original_name = secure_filename(uploaded.filename)[:255]
+    if not original_name or not _allowed_upload(original_name):
+        flash("This file type is not allowed. Upload a document, image, archive, or source file.", "error")
+        return redirect(url_for("web.dashboard"))
+    if not title:
+        title = original_name[:200]
+    token = secrets.token_hex(20)
+    stored_name = f"{token}.{original_name.rsplit('.', 1)[1].lower()}"
+    file_data = uploaded.read()
+    if not file_data:
+        flash("The selected file is empty.", "error")
+        return redirect(url_for("web.dashboard"))
+    item = ProjectFile(title=title, filename=original_name, storage_path=stored_name, file_data=file_data,
+                       description=notes, submission_notes=repo_path, submitted_by=g.user.id, status="pending")
+    db.session.add(item)
+    db.session.flush()
+    audit("project_file_uploaded", f"file={item.id}; title={title}", g.user.id)
+    db.session.commit()
+    flash("File uploaded and sent to the Admin for review.", "success")
+    return redirect(url_for("web.dashboard"))
+
+
+@bp.route("/project/files/<int:file_id>/download")
+@login_required
+def project_file_download(file_id):
+    item = db.session.get(ProjectFile, file_id) or abort(404)
+    permitted = (g.user.role == "admin" or item.submitted_by == g.user.id or
+                 (g.user.role in {"founder", "connector"} and item.status == "approved"))
+    if not permitted:
+        abort(403)
+    if item.file_data:
+        return send_file(io.BytesIO(item.file_data), as_attachment=True, download_name=item.filename,
+                         conditional=True, max_age=0)
+    # Backward compatibility for files stored by earlier versions on local disk.
+    if not item.storage_path or Path(item.storage_path).name != item.storage_path:
+        abort(404)
+    return send_from_directory(_project_upload_dir(), item.storage_path, as_attachment=True,
+                               download_name=item.filename, conditional=True)
+
+
+@bp.route("/project/signatures/<int:confirmation_id>")
+@login_required
+def project_signature_view(confirmation_id):
+    confirmation = db.session.get(AgreementConfirmation, confirmation_id) or abort(404)
+    if g.user.role not in PROJECT_ROLES:
+        abort(403)
+    stored_name = confirmation.signature_path or ""
+    if not stored_name or Path(stored_name).name != stored_name or stored_name.startswith("http"):
+        abort(404)
+    if confirmation.signature_data:
+        suffix = stored_name.rsplit(".", 1)[-1].lower()
+        mimetype = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}.get(suffix)
+        if not mimetype: abort(404)
+        return send_file(io.BytesIO(confirmation.signature_data), mimetype=mimetype, as_attachment=False, max_age=0)
+    return send_from_directory(_project_upload_dir(), stored_name, as_attachment=False, conditional=True)
+
+
+@bp.route("/admin/project/files/<int:file_id>/review", methods=["POST"])
+@admin_required
+def project_file_review(file_id):
+    item = db.session.get(ProjectFile, file_id) or abort(404)
+    decision = clean(request.form.get("decision"), 20)
+    if decision not in {"approved", "rejected", "corrections"}:
+        abort(400)
+    item.status = decision
+    item.reviewer_comment = clean(request.form.get("comment"), 10000)
+    item.reviewed_by = g.user.id
+    item.reviewed_at = utcnow()
+    audit("project_file_reviewed", f"file={file_id}; decision={decision}", g.user.id)
+    db.session.commit()
+    flash("File review saved.", "success")
+    return redirect(url_for("web.project_admin"))
+
+
+@bp.route("/admin/project/notices", methods=["POST"])
+@admin_required
+def project_notice_create():
+    title = clean(request.form.get("title"), 200)
+    message = clean(request.form.get("message"), 20000)
+    if not title or not message:
+        flash("Enter both a notice title and message.", "error")
+        return redirect(url_for("web.project_admin"))
+    notice = ProjectNotice(title=title, message=message, created_by=g.user.id)
+    db.session.add(notice)
+    db.session.flush()
+    audit("project_notice_published", f"notice={notice.id}; title={title}", g.user.id)
+    db.session.commit()
+    flash("Update notice published to member dashboards.", "success")
+    return redirect(url_for("web.project_admin"))
+
+
+@bp.route("/project/notices/<int:notice_id>/acknowledge", methods=["POST"])
+@login_required
+@member_required
+def project_notice_acknowledge(notice_id):
+    notice = db.session.get(ProjectNotice, notice_id) or abort(404)
+    existing = ProjectNoticeAcknowledgement.query.filter_by(notice_id=notice.id, user_id=g.user.id).first()
+    if not existing:
+        db.session.add(ProjectNoticeAcknowledgement(notice_id=notice.id, user_id=g.user.id))
+        audit("project_notice_acknowledged", f"notice={notice.id}", g.user.id)
+        db.session.commit()
+        flash("You acknowledged this application update.", "success")
+    else:
+        flash("You have already acknowledged this update.", "info")
+    return redirect(url_for("web.dashboard"))
+
+
+DEFAULT_AGREEMENT = """NEXORA WORKPULSE PROJECT AGREEMENT\n\nProject: NEXORA WORKPULSE\nProject lead: Ravi Teja Lingala and team\nFounders: Seema and Hrithik\nConnector: Naveen\nFixed project budget: US$6,500\n\nScope and responsibilities: The project team will work on the agreed NEXORA WORKPULSE application scope, implementation, testing, deployment preparation, and handover. The Admin coordinates project tasks and approves changes before they become visible to the Founders and Connector.\n\nDelivery and changes: Work is tracked through the project workflow. Requested changes are reviewed by the Admin and may be approved, rejected, or returned for correction. This agreement does not specify a payment schedule or additional commercial terms.\n\nSignatures and confirmation: Each participant may review the current version and submit an explicit confirmation. Confirmations are recorded with timestamps against the agreement version.\n\nStatus: Draft until finalized by the Admin."""
+
+@bp.route("/project/agreement", methods=["GET", "POST"])
+@login_required
+def project_agreement():
+    agreement = ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first()
+    if agreement is None:
+        agreement = ProjectAgreement(version=1, body=DEFAULT_AGREEMENT, status="draft", updated_by=g.user.id)
+        db.session.add(agreement); db.session.commit()
+    if request.method == "POST":
+        if g.user.role == "admin":
+            body = request.form.get("body", "")
+            if len(body) > 200000: abort(413)
+            agreement = ProjectAgreement(version=agreement.version + 1, body=body, title=clean(request.form.get("title"), 200) or "NEXORA WORKPULSE Project Agreement", status="finalized" if request.form.get("action") == "finalize" else "draft", updated_by=g.user.id)
+            db.session.add(agreement); db.session.commit(); audit("agreement_version_saved", f"version={agreement.version}; status={agreement.status}", g.user.id); db.session.commit()
+            flash("Agreement version saved.", "success")
+        elif request.form.get("confirm") == "yes":
+            uploaded = request.files.get("signature_file")
+            if not uploaded or not uploaded.filename:
+                flash("Choose a signature image file before confirming.", "error")
+            else:
+                original = secure_filename(uploaded.filename)
+                if not _allowed_upload(original, IMAGE_EXTENSIONS):
+                    flash("Signature must be a PNG, JPG, JPEG, WEBP, or GIF image.", "error")
+                else:
+                    stored_name = f"signature-{secrets.token_hex(20)}.{original.rsplit('.', 1)[1].lower()}"
+                    signature_data = uploaded.read()
+                    if not signature_data:
+                        flash("The selected signature image is empty.", "error")
+                        return redirect(url_for("web.project_agreement"))
+                    confirmation = AgreementConfirmation(agreement_id=agreement.id, user_id=g.user.id,
+                                                         confirmation="confirmed", signature_path=stored_name,
+                                                         signature_data=signature_data)
+                    db.session.add(confirmation)
+                    db.session.commit()
+                    audit("agreement_confirmed", f"agreement={agreement.id}; signature_uploaded=true", g.user.id)
+                    db.session.commit()
+                    flash("Agreement confirmation and signature image recorded.", "success")
+        return redirect(url_for("web.project_agreement"))
+    confirmations = AgreementConfirmation.query.filter_by(agreement_id=agreement.id).order_by(AgreementConfirmation.confirmed_at.desc()).all()
+    return render_template("project_agreement.html", agreement=agreement, confirmations=confirmations)
+
 # --------------------------------------------------------------------------- CLI
 def run_migrations():
     folder = Path(__file__).parent / "migrations"
@@ -988,7 +1306,7 @@ def prepare_database():
         print("An administrator already exists; skipping admin bootstrap.")
     elif os.environ.get("ADMIN_EMAIL") and os.environ.get("ADMIN_PASSWORD"):
         print(create_admin(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"],
-                           os.environ.get("ADMIN_NAME", "Administrator"))[1])
+                           os.environ.get("ADMIN_NAME", "Ravi Teja Lingala"))[1])
     else:
         print("No administrator yet. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env and start again.")
 
@@ -1003,49 +1321,9 @@ def register_cli(app):
     def create_admin_cmd():
         """Create an administrator from ADMIN_EMAIL / ADMIN_PASSWORD (never overwrites)."""
         ok, msg = create_admin(os.environ.get("ADMIN_EMAIL"), os.environ.get("ADMIN_PASSWORD"),
-                               os.environ.get("ADMIN_NAME", "Administrator"))
+                               os.environ.get("ADMIN_NAME", "Ravi Teja Lingala"))
         print(msg)
         raise SystemExit(0 if ok else 1)
-
-
-DEMO_ADMIN = ("admin@example.com", "Admin-Demo-2026!")
-DEMO_MEMBER_PW = "Member-Demo-2026!"
-
-
-def demo_config():
-    """Local-only fallback: SQLite file + auto-generated secret, so the app can be explored with zero setup."""
-    base = Path(__file__).parent
-    keyfile = base / ".local_secret"
-    if not keyfile.exists():
-        keyfile.write_text(secrets.token_urlsafe(48))
-    return {
-        "SECRET_KEY": keyfile.read_text().strip(),
-        "SQLALCHEMY_DATABASE_URI": "sqlite:///" + str(base / "workpulse_demo.db"),
-        "APP_TIMEZONE": os.environ.get("APP_TIMEZONE", "Asia/Kolkata"),
-        "DAILY_TARGET_MINUTES": 240, "SESSION_MAX_HOURS": 16,
-        "DEV_MODE": True, "SESSION_COOKIE_SECURE": False,
-    }
-
-
-def seed_demo():
-    if User.query.count():
-        return
-    today = local_today()
-    db.session.add(User(name="Demo Admin", email=DEMO_ADMIN[0], role="admin",
-                        password_hash=generate_password_hash(DEMO_ADMIN[1])))
-    members = [User(name=n, email=e, role="member", password_hash=generate_password_hash(DEMO_MEMBER_PW))
-               for n, e in (("Mia Member", "mia@example.com"), ("Raj Member", "raj@example.com"))]
-    db.session.add_all(members)
-    db.session.flush()
-    t = Task(title="Prepare weekly status report", description="Collect progress from your work this week and "
-             "write a one-page summary.", priority="high", target_hours=3, start_date=today,
-             deadline=today + timedelta(days=3), expected_deliverable="Link to the report document",
-             instructions="Keep it short and factual.", created_by=1)
-    db.session.add(t)
-    db.session.flush()
-    for m in members:
-        db.session.add(Assignment(task_id=t.id, user_id=m.id))
-    db.session.commit()
 
 
 if __name__ == "__main__":
@@ -1056,19 +1334,17 @@ if __name__ == "__main__":
         load_dotenv(Path(__file__).parent / ".env", override=True)
     except ImportError:
         pass
-    _demo = not os.environ.get("DATABASE_URL", "").strip()
+    _demo = False
+    if not os.environ.get("DATABASE_URL", "").strip():
+        raise SystemExit("DATABASE_URL is required. Configure the existing database; demo accounts are disabled.")
     try:
-        _app = create_app(demo_config()) if _demo else create_app()
+        _app = create_app()
     except ConfigError as exc:
         raise SystemExit(f"\nCONFIGURATION ERROR: {exc}\n")
     try:
         with _app.app_context():
-            if _demo:
-                db.create_all()
-                seed_demo()
-            else:
-                print("Connecting to the database and preparing tables ...")
-                prepare_database()
+            print("Connecting to the configured database and preparing tables ...")
+            prepare_database()
     except Exception as exc:  # noqa: BLE001
         raise SystemExit("\nDATABASE ERROR: could not connect or set up the tables.\n"
                          "Check DATABASE_URL (use the Supabase *Session pooler* string, correct password).\n"
@@ -1076,11 +1352,7 @@ if __name__ == "__main__":
     _port = int(os.environ.get("PORT", "5000"))
     print("\n" + "=" * 62)
     print("NEXORA WORKPULSE is running.   Open:  http://127.0.0.1:%d" % _port)
-    if _demo:
-        print("DEMO MODE (no Supabase needed; data is in workpulse_demo.db)")
-        print("  Admin  : %s  /  %s" % DEMO_ADMIN)
-        print("  Member : mia@example.com  /  %s" % DEMO_MEMBER_PW)
-        print("  Member : raj@example.com  /  %s" % DEMO_MEMBER_PW)
+    # Demo-account credentials are intentionally not printed or provisioned.
     print("Press CTRL+C to stop.")
     print("=" * 62 + "\n")
     _app.run(host="127.0.0.1", port=_port, debug=False)

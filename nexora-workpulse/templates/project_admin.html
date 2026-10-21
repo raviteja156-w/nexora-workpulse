@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}Project Control{% endblock %}
+{% block content %}
+<section class="project-hero card">
+  <div><span class="eyebrow">NEXORA WORKPULSE · ADMIN CONTROL</span><h1>Project Control Center</h1><p>Manage workflow stages dynamically. Renames, status changes, and progress are saved to the database.</p></div>
+  <div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="hero-glyph">✦</div></div>
+  <div class="btn-row">{% if live_app_url %}<a class="btn btn-success" href="{{ live_app_url }}" target="_blank" rel="noopener">View Live Application ↗</a>{% else %}<span class="badge badge-amber">Set LIVE_APPLICATION_URL to enable live link</span>{% endif %}<a class="btn btn-ghost" href="{{ url_for('web.project_agreement') }}">Edit Agreement</a></div>
+</section>
+<section class="card">
+  <div class="page-head"><div><h2>Workflow stages</h2><p class="muted">Rename a step using its name field. Set one stage to Current when appropriate.</p></div></div>
+  <div class="workflow-list">
+  {% for stage in stages %}
+    <article class="workflow-stage">
+      <div class="stage-number">{{ '%02d'|format(loop.index) }}</div>
+      <form method="post" action="{{ url_for('web.project_stage_update', sid=stage.id) }}" class="stage-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="stage-fields">
+          <div><label>Step name</label><input name="name" value="{{ stage.name }}" maxlength="120" required></div>
+          <div><label>Status</label><select name="status">{% for val,label in [('upcoming','Upcoming'),('current','Current'),('completed','Completed'),('blocked','Blocked'),('awaiting_approval','Awaiting approval')] %}<option value="{{ val }}" {{ 'selected' if stage.status == val }}>{{ label }}</option>{% endfor %}</select></div>
+          <div><label>Progress %</label><input type="number" name="progress" min="0" max="100" value="{{ stage.progress }}"></div>
+          <div><label>Display order</label><input type="number" name="position" min="0" value="{{ stage.position }}"></div>
+          <div><label>Responsible person</label><input name="responsible_person" value="{{ stage.responsible_person or '' }}" maxlength="120"></div>
+        </div>
+        <label>Description / instructions</label><textarea name="description" rows="2" maxlength="20000">{{ stage.description or '' }}</textarea>
+        <div class="btn-row"><button class="btn btn-primary btn-sm">Save stage</button></div>
+      </form>
+      <form method="post" action="{{ url_for('web.project_stage_delete', sid=stage.id) }}" onsubmit="return confirm('Delete this workflow stage?')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-danger btn-sm">Delete</button></form>
+    </article>
+  {% else %}<p class="empty">No workflow stages yet. Add the first stage below.</p>{% endfor %}
+  </div>
+</section>
+<section class="card">
+  <h2>Add a workflow stage</h2>
+  <form method="post" action="{{ url_for('web.project_stage_create') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Stage name</label><input name="name" maxlength="120" required placeholder="e.g. Client Acceptance"><label>Description</label><textarea name="description" rows="3" maxlength="20000"></textarea><button class="btn btn-primary">Add stage</button></form>
+</section>
+
+<section class="card"><h2>Publish application update notice</h2><p class="muted">Use this after an application update is completed. The notice appears on member dashboards and each member can acknowledge it. You can see the acknowledgement count below.</p><form method="post" action="{{ url_for('web.project_notice_create') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label for="notice-title">Update title</label><input id="notice-title" name="title" maxlength="200" required placeholder="e.g. Member dashboard update completed"><label for="notice-message">What was updated?</label><textarea id="notice-message" name="message" rows="4" maxlength="20000" required placeholder="Describe the changes and any action members should take."></textarea><button class="btn btn-primary">Publish to member dashboards</button></form></section>
+<section class="card"><h2>Published notices and member acknowledgements</h2>{% for notice in notices %}<article class="submission-card"><div class="page-head"><div><h3>{{ notice.title }}</h3><small class="muted">{{ notice.created_at|ldt }}</small></div><span class="badge badge-green">{{ notice_ack_counts.get(notice.id, 0) }} / {{ active_members|length }} acknowledged</span></div><p class="pre">{{ notice.message }}</p><details><summary>View member acknowledgement status</summary><ul>{% for member in active_members %}<li>{{ member.name }} — {% set acked_ids = notice_ack_user_ids.get(notice.id, []) %}{{ 'Acknowledged' if member.id in acked_ids else 'Pending' }}</li>{% endfor %}</ul></details></article>{% else %}<p class="empty">No update notices published yet.</p>{% endfor %}</section>
+<section class="card"><h2>Member uploaded files</h2><p class="muted">Review each upload before it becomes visible to Founders and the Connector.</p>{% for item in files %}<article class="submission-card"><div class="page-head"><div><h3>{{ item.title }}</h3><small class="muted">{{ item.submitter.name if item.submitter else 'Member' }} · {{ item.uploaded_at|ldt }} · {{ item.filename }}</small></div><span class="badge {{ 'badge-green' if item.status == 'approved' else 'badge-red' if item.status == 'rejected' else 'badge-amber' }}">{{ item.status|capitalize }}</span></div>{% if item.submission_notes %}<p><b>Path:</b> {{ item.submission_notes }}</p>{% endif %}{% if item.description %}<p class="pre">{{ item.description }}</p>{% endif %}<div class="btn-row"><a class="btn btn-ghost btn-sm" href="{{ url_for('web.project_file_download', file_id=item.id) }}">Download</a>{% if item.status in ['pending','corrections'] %}<form method="post" action="{{ url_for('web.project_file_review', file_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Review comment</label><input name="comment" maxlength="10000" value="{{ item.reviewer_comment or '' }}"><button class="btn btn-success btn-sm" name="decision" value="approved">Approve</button> <button class="btn btn-ghost btn-sm" name="decision" value="corrections">Request changes</button> <button class="btn btn-danger btn-sm" name="decision" value="rejected">Reject</button></form>{% elif item.reviewer_comment %}<p><b>Review:</b> {{ item.reviewer_comment }}</p>{% endif %}</div></article>{% else %}<p class="empty">No files have been uploaded.</p>{% endfor %}</section>
+
+<section class="card"><h2>Submitted project updates</h2>
+  {% for item in updates %}<article class="submission-card"><div class="page-head"><div><h3>{{ item.title }}</h3><p class="muted">By {{ item.submitter.name }} · {{ item.created_at|ldt }}</p></div><span class="badge {{ 'badge-green' if item.status == 'approved' else 'badge-red' if item.status == 'rejected' else 'badge-amber' }}">{{ item.status|capitalize }}</span></div><p class="pre">{{ item.description }}</p>{% if item.reviewer_comment %}<p><b>Review:</b> {{ item.reviewer_comment }}</p>{% endif %}{% if item.status == 'pending' or item.status == 'corrections' %}<form method="post" action="{{ url_for('web.project_update_review', uid=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Reviewer comment</label><textarea name="comment" rows="2" maxlength="10000"></textarea><div class="btn-row"><button class="btn btn-success" name="decision" value="approved">Approve</button><button class="btn btn-ghost" name="decision" value="corrections">Request corrections</button><button class="btn btn-danger" name="decision" value="rejected">Reject</button></div></form>{% endif %}</article>{% else %}<p class="empty">No project updates have been submitted.</p>{% endfor %}
+</section>
+{% endblock %}

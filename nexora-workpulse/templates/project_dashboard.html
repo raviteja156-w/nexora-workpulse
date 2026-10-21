@@ -1,0 +1,109 @@
+{% extends 'base.html' %}
+
+{% block title %}Project Dashboard{% endblock %}
+
+{% block content %}
+<section class="project-hero card">
+  <div>
+    <span class="eyebrow">NEXORA WORKPULSE</span>
+    <h1>Project overview</h1>
+    <p>View the live application, track project milestones, and access the project agreement.</p>
+  </div>
+
+  <div class="hero-art" aria-hidden="true">
+    <div class="orbit orbit-one"></div>
+    <div class="orbit orbit-two"></div>
+    <div class="hero-glyph">✦</div>
+  </div>
+
+  <div class="btn-row">
+    {% if live_app_url %}
+      <a class="btn btn-success btn-lg"
+         href="{{ live_app_url }}"
+         target="_blank"
+         rel="noopener noreferrer">
+        View Live Application ↗
+      </a>
+    {% else %}
+      <span class="badge badge-amber">Live application URL is not configured</span>
+    {% endif %}
+
+    <a class="btn btn-ghost" href="{{ url_for('web.project_agreement') }}">
+      Project Agreement
+    </a>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Project workflow</h2>
+  <div class="workflow-public">
+    {% for stage in stages %}
+      <div class="public-stage {{ 'is-current' if stage.status == 'current' else 'is-complete' if stage.status == 'completed' else 'is-blocked' if stage.status == 'blocked' else '' }}">
+        <span class="public-stage-dot">
+          {% if stage.status == 'completed' %}
+            ✓
+          {% else %}
+            {{ loop.index }}
+          {% endif %}
+        </span>
+
+        <div>
+          <b>{{ stage.name }}</b>
+          <p class="muted">
+            {{ stage.status|replace('_', ' ')|capitalize }} · {{ stage.progress }}%
+          </p>
+
+          {% if stage.description %}
+            <p>{{ stage.description }}</p>
+          {% endif %}
+
+          {% if stage.responsible_person %}
+            <small>Responsible: {{ stage.responsible_person }}</small>
+          {% endif %}
+        </div>
+
+        <div class="bar" role="progressbar"
+             aria-label="{{ stage.name }} progress"
+             aria-valuemin="0"
+             aria-valuemax="100"
+             aria-valuenow="{{ stage.progress }}">
+          <i data-progress="{{ stage.progress }}"></i>
+        </div>
+      </div>
+    {% else %}
+      <p class="empty">The Admin has not configured project stages yet.</p>
+    {% endfor %}
+  </div>
+</section>
+
+
+<section class="card">
+  <h2>Submit required changes</h2>
+  <p class="muted">Describe the change or correction you need. Your request will be sent to the Admin for review.</p>
+
+  <form method="post" action="{{ url_for('web.project_submit') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="change-title">Change title</label>
+    <input id="change-title" name="title" maxlength="200" required
+           placeholder="e.g. Update the application dashboard">
+
+    <label for="change-description">Required change details</label>
+    <textarea id="change-description" name="description" rows="5" maxlength="200000" required
+              placeholder="Explain what needs to change and how it should work..."></textarea>
+
+    <button class="btn btn-primary" type="submit">Submit change request</button>
+  </form>
+</section>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.workflow-public .bar i[data-progress]').forEach(function (bar) {
+      var progress = Number.parseInt(bar.dataset.progress, 10);
+      if (!Number.isFinite(progress)) progress = 0;
+      progress = Math.max(0, Math.min(100, progress));
+      bar.style.width = progress + '%';
+    });
+  });
+</script>
+{% endblock %}

@@ -4,7 +4,9 @@
 {% block content %}
 <div class="page-head">
   <div><h1>Team overview</h1><p class="muted">{{ today|ldate }} &middot; daily attendance target {{ target|hm }}</p></div>
-  <a class="btn btn-primary btn-lg" href="{{ url_for('web.task_new') }}">{{ icon('plus', 18) }} POST A TASK</a>
+  <div class="btn-row"><a class="btn btn-primary btn-lg" href="{{ url_for('web.task_new') }}">{{ icon('plus', 18) }} POST A TASK</a>
+  <a class="btn btn-ghost btn-lg" href="{{ url_for('web.project_admin') }}">Manage Project Workflow</a>
+  {% if live_app_url %}<a class="btn btn-success btn-lg" href="{{ live_app_url }}" target="_blank" rel="noopener">View Live Application ↗</a>{% endif %}</div>
 </div>
 {% include '_observed.html' %}
 <div class="stats">

@@ -23,7 +23,7 @@ class User(db.Model):
     session_version = db.Column(db.Integer, nullable=False, default=1)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
     last_login_at = db.Column(db.DateTime)
-    __table_args__ = (db.CheckConstraint("role IN ('admin','member')", name="ck_nwp_users_role"),)
+    __table_args__ = (db.CheckConstraint("role IN ('admin','member','founder','connector')", name="ck_nwp_users_role"),)
 
 
 class Task(db.Model):
@@ -140,3 +140,100 @@ class AuditLog(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
     user = db.relationship("User")
     __table_args__ = (Index("ix_nwp_audit_created", "created_at"),)
+
+
+class ProjectStage(db.Model):
+    """Admin-managed workflow stages; order and names are database-backed."""
+    __tablename__ = "nwp_project_stages"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.Text)
+    position = db.Column(db.Integer, nullable=False, default=0)
+    status = db.Column(db.String(20), nullable=False, default="upcoming")
+    progress = db.Column(db.Integer, nullable=False, default=0)
+    responsible_person = db.Column(db.String(120))
+    start_date = db.Column(db.Date)
+    due_date = db.Column(db.Date)
+    completion_date = db.Column(db.Date)
+    admin_approved = db.Column(db.Boolean, nullable=False, default=False)
+    updated_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
+    updated_at = db.Column(db.DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+class ProjectUpdate(db.Model):
+    __tablename__ = "nwp_project_updates"
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    update_type = db.Column(db.String(30), nullable=False, default="update")
+    submitted_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    reviewer_comment = db.Column(db.Text)
+    reviewed_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    reviewed_at = db.Column(db.DateTime)
+    submitter = db.relationship("User", foreign_keys=[submitted_by])
+    reviewer = db.relationship("User", foreign_keys=[reviewed_by])
+
+class ProjectFile(db.Model):
+    __tablename__ = "nwp_project_files"
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    storage_path = db.Column(db.String(1000), nullable=False)
+    file_data = db.Column(db.LargeBinary)
+    description = db.Column(db.Text)
+    task_id = db.Column(db.Integer, db.ForeignKey("nwp_tasks.id"))
+    submission_notes = db.Column(db.Text)
+    submitted_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    reviewer_comment = db.Column(db.Text)
+    uploaded_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    reviewed_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
+    reviewed_at = db.Column(db.DateTime)
+    submitter = db.relationship("User", foreign_keys=[submitted_by])
+
+class ProjectAgreement(db.Model):
+    __tablename__ = "nwp_project_agreements"
+    id = db.Column(db.Integer, primary_key=True)
+    version = db.Column(db.Integer, nullable=False, default=1)
+    title = db.Column(db.String(200), nullable=False, default="NEXORA WORKPULSE Project Agreement")
+    body = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="draft")
+    updated_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+class AgreementConfirmation(db.Model):
+    __tablename__ = "nwp_agreement_confirmations"
+    id = db.Column(db.Integer, primary_key=True)
+    agreement_id = db.Column(db.Integer, db.ForeignKey("nwp_project_agreements.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("nwp_users.id"), nullable=False)
+    confirmation = db.Column(db.String(20), nullable=False)
+    signature_path = db.Column(db.String(1000))
+    signature_data = db.Column(db.LargeBinary)
+    confirmed_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    agreement = db.relationship("ProjectAgreement")
+    user = db.relationship("User")
+
+
+class ProjectNotice(db.Model):
+    """Admin-published application update notices shown to members."""
+    __tablename__ = "nwp_project_notices"
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey("nwp_users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    creator = db.relationship("User", foreign_keys=[created_by])
+
+
+class ProjectNoticeAcknowledgement(db.Model):
+    """Tracks which members acknowledged each admin-published update notice."""
+    __tablename__ = "nwp_project_notice_acknowledgements"
+    id = db.Column(db.Integer, primary_key=True)
+    notice_id = db.Column(db.Integer, db.ForeignKey("nwp_project_notices.id", ondelete="CASCADE"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("nwp_users.id"), nullable=False)
+    acknowledged_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    notice = db.relationship("ProjectNotice")
+    user = db.relationship("User")
+    __table_args__ = (db.UniqueConstraint("notice_id", "user_id", name="uq_nwp_notice_ack_user"),)

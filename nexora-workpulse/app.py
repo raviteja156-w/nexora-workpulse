@@ -5,6 +5,7 @@ Production:    gunicorn "app:create_app()"
 CLI:           flask --app app init-db | create-admin | wipe-data
 """
 import csv
+import hashlib
 import io
 import json
 import os
@@ -28,8 +29,9 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from models import (Acknowledgement, Assignment, AssignmentReview, AttendanceSession, AuditLog,
-                    BreakRecord, Setting, Task, TaskUpdate, User, db, utcnow)
+from models import (Acknowledgement, Agreement, AgreementSignature, Assignment, AssignmentReview,
+                    AttendanceSession, AuditLog, BreakRecord, ChangeRequest, Milestone, Project, ProjectUpdate,
+                    Setting, Task, TaskUpdate, User, db, utcnow)
 
 
 class ConfigError(RuntimeError):
@@ -46,6 +48,14 @@ SKILL_AREAS = [("backend", "Backend operations", "skill_backend"),
 WORK_TYPES = {"backend": "Backend", "database": "Database", "frontend": "Frontend",
               "fullstack": "Full-stack", "other": "General / other"}
 STAGES = ["Assigned", "Working", "Pull request", "Completed", "Approved"]
+ROLES = {"member": "Team member", "founder": "Founder", "admin": "Admin"}
+PHASES = {"discovery": "Discovery", "design": "Design", "development": "Development", "testing": "Testing",
+          "launch": "Launch", "live": "Live & support"}
+PROJECT_STATUS = {"on_track": "On track", "at_risk": "Needs attention", "delayed": "Delayed",
+                  "paused": "Paused", "completed": "Completed"}
+MILESTONE_STATUS = {"pending": "Upcoming", "in_progress": "In progress", "done": "Done"}
+REQUEST_STATUS = {"open": "Received", "in_progress": "Working on it", "done": "Done", "declined": "Not planned"}
+REQUEST_PRIORITY = {"low": "Low", "normal": "Normal", "high": "High", "urgent": "Urgent"}
 MIN_PASSWORD = 12
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)(?:[/?#].*)?$")
@@ -462,6 +472,7 @@ def role_required(role):
 
 admin_required = role_required("admin")
 member_required = role_required("member")
+founder_required = role_required("founder")
 
 
 @bp.route("/")
@@ -550,8 +561,9 @@ def logout():
         if s:
             close_session(s, utcnow())
             db.session.commit()
+    was_member = g.user.role == "member"
     session.clear()
-    flash("You have been signed out. Your work timer is stopped.", "info")
+    flash("You have been signed out." + (" Your work timer is stopped." if was_member else ""), "info")
     return redirect(url_for("web.login"))
 
 
@@ -610,6 +622,8 @@ def onboarding(step):
 @bp.route("/dashboard")
 @login_required
 def dashboard():
+    if g.user.role == "founder":
+        return founder_dashboard()
     return admin_dashboard() if g.user.role == "admin" else member_dashboard()
 
 
@@ -820,9 +834,17 @@ def users():
 @bp.route("/admin/users/new", methods=["GET", "POST"])
 @admin_required
 def user_new():
-    errors, v = [], {"name": "", "email": ""}
+    errors = []
+    v = {"name": "", "email": "", "role": request.args.get("role", "member"), "project_id": request.args.get("project", "")}
+    projects = Project.query.order_by(Project.name).all()
     if request.method == "POST":
-        v = {"name": clean(request.form.get("name"), 80), "email": clean(request.form.get("email"), 254).lower()}
+        v = {"name": clean(request.form.get("name"), 80), "email": clean(request.form.get("email"), 254).lower(),
+             "role": request.form.get("role", "member"), "project_id": request.form.get("project_id", "")}
+        if v["role"] not in ("member", "founder"):
+            errors.append("Choose Team member or Founder.")
+        project = (db.session.get(Project, int(v["project_id"])) if v["project_id"].isdigit() else None)
+        if v["role"] == "founder" and not project:
+            errors.append("Choose the founder's project (create the project first under Founders).")
         pw, confirm = request.form.get("password", ""), request.form.get("confirm_password", "")
         if len(v["name"]) < 2:
             errors.append("Name must be at least 2 characters.")
@@ -835,15 +857,17 @@ def user_new():
             errors.append(err)
         if not errors:
             try:
-                u = User(name=v["name"], email=v["email"], role="member", password_hash=generate_password_hash(pw))
+                u = User(name=v["name"], email=v["email"], role=v["role"], password_hash=generate_password_hash(pw),
+                         project_id=project.id if v["role"] == "founder" else None)
                 db.session.add(u)
                 db.session.commit()
-                flash(f"Account created for {u.name}. Attendance starts the day they first sign in.", "success")
+                flash(f"Account created for {u.name}. " + ("They will see their project status and agreement."
+                      if u.role == "founder" else "Attendance starts the day they first sign in."), "success")
                 return redirect(url_for("web.users"))
             except IntegrityError:
                 db.session.rollback()
                 errors.append("An account with this email already exists.")
-    return render_template("user_form.html", errors=errors, v=v, min_length=MIN_PASSWORD)
+    return render_template("user_form.html", errors=errors, v=v, min_length=MIN_PASSWORD, projects=projects)
 
 
 @bp.route("/admin/users/<int:uid>/toggle", methods=["POST"])
@@ -879,11 +903,18 @@ def user_reset(uid):
 def member_footprint(u):
     return dict(sessions=AttendanceSession.query.filter_by(user_id=u.id).count(),
                 tasks=Assignment.query.filter_by(user_id=u.id).count(),
-                updates=TaskUpdate.query.filter_by(user_id=u.id).count())
+                updates=TaskUpdate.query.filter_by(user_id=u.id).count(),
+                requests=ChangeRequest.query.filter_by(user_id=u.id).count(),
+                signatures=AgreementSignature.query.filter_by(user_id=u.id).count())
 
 
-def delete_member(u):
-    """Permanently remove a member and everything recorded for them."""
+def delete_member(u, heir_id=None):
+    """Permanently remove a user (member, founder or admin) and everything recorded for them.
+    Tasks they created and reviews they wrote are handed over to `heir_id` (the admin doing the delete)."""
+    if heir_id:
+        Task.query.filter_by(created_by=u.id).update({Task.created_by: heir_id}, synchronize_session=False)
+        AssignmentReview.query.filter_by(reviewer_id=u.id).update({AssignmentReview.reviewer_id: heir_id},
+                                                                  synchronize_session=False)
     sids = [s.id for s in AttendanceSession.query.with_entities(AttendanceSession.id).filter_by(user_id=u.id)]
     aids = [a.id for a in Assignment.query.with_entities(Assignment.id).filter_by(user_id=u.id)]
     if sids:
@@ -896,6 +927,10 @@ def delete_member(u):
     Assignment.query.filter_by(user_id=u.id).delete(synchronize_session=False)
     Acknowledgement.query.filter_by(user_id=u.id).delete(synchronize_session=False)
     AuditLog.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    AgreementSignature.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    ChangeRequest.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    ProjectUpdate.query.filter_by(author_id=u.id).update({ProjectUpdate.author_id: heir_id}, synchronize_session=False)
+    Agreement.query.filter_by(updated_by=u.id).update({Agreement.updated_by: heir_id}, synchronize_session=False)
     db.session.delete(u)
 
 
@@ -903,15 +938,15 @@ def delete_member(u):
 @admin_required
 def user_delete(uid):
     u = db.session.get(User, uid) or abort(404)
-    if u.role != "member":
-        flash("Administrator accounts cannot be deleted here.", "warning")
+    if u.id == g.user.id:
+        flash("You cannot delete the account you are signed in with. Ask another admin to delete it.", "warning")
         return redirect(url_for("web.users"))
     if request.method == "POST":
         if request.form.get("confirm_email", "").strip().lower() != u.email:
-            flash("Type the member's email exactly to confirm.", "error")
+            flash("Type the email exactly to confirm.", "error")
             return render_template("user_delete.html", u=u, fp=member_footprint(u)), 400
         name = u.name
-        delete_member(u)
+        delete_member(u, heir_id=g.user.id)
         db.session.commit()
         flash(f"{name} and all of their records were deleted.", "success")
         return redirect(url_for("web.users"))
@@ -937,27 +972,36 @@ def settings():
                            token=bool(current_app.config.get("GITHUB_TOKEN")))
 
 
-def wipe_all_data():
-    """Delete all WorkPulse records. Keeps administrator accounts (so you can sign in) and settings."""
+def wipe_all_data(keep_user_id=None, include_admins=False):
+    """Delete all WorkPulse records and settings stay. Members are always deleted.
+    include_admins=True also deletes every other admin account, keeping only `keep_user_id`."""
     for model in (TaskUpdate, AssignmentReview, Assignment, Task, BreakRecord, AttendanceSession,
-                  Acknowledgement, AuditLog):
+                  Acknowledgement, AuditLog, AgreementSignature, Agreement, ChangeRequest, ProjectUpdate, Milestone):
         model.query.delete(synchronize_session=False)
-    User.query.filter(User.role != "admin").delete(synchronize_session=False)
-    User.query.update({User.first_login_at: None}, synchronize_session=False)
+    gone = User.role != "admin"
+    if include_admins and keep_user_id:
+        gone = User.id != keep_user_id
+    User.query.filter(gone).delete(synchronize_session=False)
+    User.query.update({User.first_login_at: None, User.project_id: None}, synchronize_session=False)
+    Project.query.delete(synchronize_session=False)
 
 
 @bp.route("/admin/reset", methods=["GET", "POST"])
 @admin_required
 def reset_data():
     counts = dict(members=User.query.filter_by(role="member").count(), tasks=Task.query.count(),
-                  sessions=AttendanceSession.query.count(), updates=TaskUpdate.query.count())
+                  founders=User.query.filter_by(role="founder").count(), projects=Project.query.count(),
+                  sessions=AttendanceSession.query.count(), updates=TaskUpdate.query.count(),
+                  admins=User.query.filter(User.role == "admin", User.id != g.user.id).count())
     if request.method == "POST":
         if request.form.get("phrase", "").strip() != WIPE_PHRASE:
             flash(f"Type {WIPE_PHRASE} exactly to confirm.", "error")
             return render_template("reset.html", counts=counts, phrase=WIPE_PHRASE), 400
-        wipe_all_data()
+        everyone = request.form.get("include_admins") == "1"
+        wipe_all_data(keep_user_id=g.user.id, include_admins=everyone)
         db.session.commit()
-        flash("All WorkPulse data was deleted. Administrator accounts and settings were kept.", "success")
+        flash("All WorkPulse data was deleted. " + ("Only your own account was kept." if everyone
+              else "Admin accounts and settings were kept."), "success")
         return redirect(url_for("web.dashboard"))
     return render_template("reset.html", counts=counts, phrase=WIPE_PHRASE)
 
@@ -1152,6 +1196,358 @@ def merge_pr(aid):
     return redirect(back)
 
 
+# --------------------------------------------------------------------------- founders: project status + agreement
+def agreement_hash(a):
+    return hashlib.sha256(f"v{a.version}\n{a.title}\n{a.body}".encode("utf-8")).hexdigest()
+
+
+def signature_state(project, user=None):
+    """Returns (agreement, current_signature_for_user_or_any, needs_signing)."""
+    a = project.agreement if project else None
+    if not a:
+        return None, None, False
+    sigs = [s for s in a.signatures if s.version == a.version and (user is None or s.user_id == user.id)]
+    return a, (sigs[0] if sigs else None), not sigs
+
+
+def project_stats(p):
+    ms = p.milestones
+    return dict(done=sum(1 for m in ms if m.status == "done"), total=len(ms),
+                open=sum(1 for r in p.requests if r.status in ("open", "in_progress")),
+                fixed=sum(1 for r in p.requests if r.status == "done"))
+
+
+def render_founder_page(p, preview=False, errors=None, form=None, status=200):
+    agreement, sig, needs = signature_state(p, None if preview else g.user)
+    return render_template("founder_dashboard.html", p=p, preview=preview, errors=errors or [], form=form or {},
+                           agreement=agreement, sig=sig, needs_sign=needs, stats=project_stats(p) if p else {},
+                           phase_keys=list(PHASES)), status
+
+
+def founder_dashboard():
+    return render_founder_page(g.user.project)
+
+
+@bp.route("/requests", methods=["POST"])
+@founder_required
+def change_request_new():
+    p = g.user.project or abort(404)
+    f, errors = request.form, []
+    title, details = clean(f.get("title"), 150), clean(f.get("details"), 5000)
+    link, priority = clean(f.get("page_url"), 500), f.get("priority", "normal")
+    if len(title) < 3:
+        errors.append("Give the change a short title (at least 3 characters).")
+    if not details:
+        errors.append("Describe what should change.")
+    if priority not in REQUEST_PRIORITY:
+        errors.append("Choose a priority.")
+    if link and not valid_url(link):
+        errors.append("The page link must start with http:// or https://")
+    if errors:
+        return render_founder_page(p, errors=errors, form=f, status=400)
+    db.session.add(ChangeRequest(project_id=p.id, user_id=g.user.id, title=title, details=details,
+                                 priority=priority, page_url=link or None))
+    db.session.commit()
+    flash("Your change request was sent to the team.", "success")
+    return redirect(url_for("web.dashboard") + "#changes")
+
+
+@bp.route("/agreement", methods=["GET", "POST"])
+@founder_required
+def agreement():
+    p = g.user.project
+    a, sig, needs = signature_state(p, g.user)
+    error = None
+    if request.method == "POST":
+        if not a:
+            abort(404)
+        name = clean(request.form.get("signed_name"), 120)
+        if not needs:
+            flash("You have already signed this version.", "info")
+            return redirect(url_for("web.agreement"))
+        if request.form.get("version") != str(a.version):
+            error = "The agreement was updated while you were reading it. Please review the new version."
+        elif request.form.get("agree") != "1":
+            error = "Tick the box to confirm you have read and agree to the agreement."
+        elif len(name) < 3:
+            error = "Type your full name as your signature."
+        else:
+            db.session.add(AgreementSignature(
+                agreement_id=a.id, user_id=g.user.id, version=a.version, signed_name=name,
+                body_hash=agreement_hash(a), ip_address=(request.remote_addr or "")[:45],
+                user_agent=(request.headers.get("User-Agent") or "")[:300]))
+            db.session.commit()
+            flash("Agreement signed. Thank you!", "success")
+            return redirect(url_for("web.agreement"))
+    return render_template("agreement.html", p=p, a=a, sig=sig, needs_sign=needs, error=error,
+                           history=[s for s in (a.signatures if a else []) if s.user_id == g.user.id])
+
+
+# --------------------------------------------------------------------------- admin: founder projects
+def parse_project_form(f):
+    v = {k: clean(f.get(k), n) for k, n in (("name", 120), ("summary", 3000), ("live_url", 500),
+                                           ("start_date", 10), ("target_date", 10))}
+    errors = []
+    if len(v["name"]) < 2:
+        errors.append("Project name must be at least 2 characters.")
+    if v["live_url"] and not valid_url(v["live_url"]):
+        errors.append("Live application link must start with http:// or https://")
+    sd, td = parse_date(v["start_date"]), parse_date(v["target_date"])
+    if v["start_date"] and not sd or v["target_date"] and not td:
+        errors.append("Dates must be valid.")
+    elif sd and td and td < sd:
+        errors.append("Target date cannot be before the start date.")
+    return v, sd, td, errors
+
+
+@bp.route("/admin/founders")
+@admin_required
+def projects():
+    items = Project.query.order_by(Project.updated_at.desc()).all()
+    unassigned = User.query.filter_by(role="founder", project_id=None).order_by(User.name).all()
+    return render_template("projects.html", projects=items, stats={p.id: project_stats(p) for p in items},
+                           signed={p.id: signature_state(p)[1] for p in items}, unassigned=unassigned)
+
+
+@bp.route("/admin/founders/new", methods=["GET", "POST"])
+@admin_required
+def project_new():
+    v, errors = {}, []
+    if request.method == "POST":
+        v, sd, td, errors = parse_project_form(request.form)
+        if not errors:
+            p = Project(name=v["name"], summary=v["summary"] or None, live_url=v["live_url"] or None,
+                        start_date=sd, target_date=td)
+            db.session.add(p)
+            db.session.flush()
+            for i, title in enumerate(("Discovery & requirements", "Design approval", "Development",
+                                       "Testing & your feedback", "Launch")):
+                db.session.add(Milestone(project_id=p.id, title=title, sort_order=i))
+            db.session.commit()
+            flash("Project created with 5 starter milestones. Now add the founder's login.", "success")
+            return redirect(url_for("web.project_admin", pid=p.id))
+    return render_template("project_form.html", p=None, v=v, errors=errors)
+
+
+@bp.route("/admin/founders/<int:pid>/edit", methods=["GET", "POST"])
+@admin_required
+def project_edit(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    v = dict(name=p.name, summary=p.summary or "", live_url=p.live_url or "",
+             start_date=p.start_date.isoformat() if p.start_date else "",
+             target_date=p.target_date.isoformat() if p.target_date else "")
+    errors = []
+    if request.method == "POST":
+        v, sd, td, errors = parse_project_form(request.form)
+        if not errors:
+            p.name, p.summary, p.live_url = v["name"], v["summary"] or None, v["live_url"] or None
+            p.start_date, p.target_date = sd, td
+            db.session.commit()
+            flash("Project details saved.", "success")
+            return redirect(url_for("web.project_admin", pid=p.id))
+    return render_template("project_form.html", p=p, v=v, errors=errors)
+
+
+@bp.route("/admin/founders/<int:pid>")
+@admin_required
+def project_admin(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    a, sig, _ = signature_state(p)
+    return render_template("project_admin.html", p=p, stats=project_stats(p), agreement=a, sig=sig,
+                           all_founders=User.query.filter_by(role="founder").order_by(User.name).all())
+
+
+@bp.route("/admin/founders/<int:pid>/preview")
+@admin_required
+def project_preview(pid):
+    return render_founder_page(db.session.get(Project, pid) or abort(404), preview=True)
+
+
+@bp.route("/admin/founders/<int:pid>/status", methods=["POST"])
+@admin_required
+def project_status(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    f = request.form
+    phase, status = f.get("phase"), f.get("status")
+    try:
+        progress = int(f.get("progress", ""))
+        if not 0 <= progress <= 100:
+            raise ValueError
+    except ValueError:
+        flash("Progress must be a whole number from 0 to 100.", "error")
+        return redirect(url_for("web.project_admin", pid=p.id))
+    if phase not in PHASES or status not in PROJECT_STATUS:
+        flash("Choose a valid phase and status.", "error")
+        return redirect(url_for("web.project_admin", pid=p.id))
+    p.phase, p.status, p.progress = phase, status, progress
+    p.status_note = clean(f.get("status_note"), 2000) or None
+    live = clean(f.get("live_url"), 500)
+    if live and not valid_url(live):
+        flash("Live application link must start with http:// or https://", "error")
+        return redirect(url_for("web.project_admin", pid=p.id))
+    p.live_url = live or None
+    p.updated_at = utcnow()
+    db.session.commit()
+    flash("Work status updated. Founders see it right away.", "success")
+    return redirect(url_for("web.project_admin", pid=p.id))
+
+
+@bp.route("/admin/founders/<int:pid>/milestones", methods=["POST"])
+@admin_required
+def milestone_add(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    title = clean(request.form.get("title"), 150)
+    if len(title) < 2:
+        flash("Milestone title is required.", "error")
+    else:
+        db.session.add(Milestone(project_id=p.id, title=title, due_date=parse_date(request.form.get("due_date")),
+                                 sort_order=max([m.sort_order for m in p.milestones] or [0]) + 1))
+        p.updated_at = utcnow()
+        db.session.commit()
+        flash("Milestone added.", "success")
+    return redirect(url_for("web.project_admin", pid=p.id) + "#milestones")
+
+
+@bp.route("/admin/milestones/<int:mid>", methods=["POST"])
+@admin_required
+def milestone_update(mid):
+    m = db.session.get(Milestone, mid) or abort(404)
+    pid = m.project_id
+    if request.form.get("action") == "delete":
+        db.session.delete(m)
+        flash("Milestone removed.", "success")
+    else:
+        title, status = clean(request.form.get("title"), 150), request.form.get("status")
+        if len(title) < 2 or status not in MILESTONE_STATUS:
+            flash("Milestone needs a title and a valid status.", "error")
+            return redirect(url_for("web.project_admin", pid=pid) + "#milestones")
+        m.title, m.status, m.due_date = title, status, parse_date(request.form.get("due_date"))
+        flash("Milestone saved.", "success")
+    m.project.updated_at = utcnow()
+    db.session.commit()
+    return redirect(url_for("web.project_admin", pid=pid) + "#milestones")
+
+
+@bp.route("/admin/founders/<int:pid>/updates", methods=["POST"])
+@admin_required
+def project_update_add(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    body = clean(request.form.get("body"), 5000)
+    if not body:
+        flash("Write the update first.", "error")
+    else:
+        db.session.add(ProjectUpdate(project_id=p.id, author_id=g.user.id, body=body))
+        p.updated_at = utcnow()
+        db.session.commit()
+        flash("Update posted to the founder's page.", "success")
+    return redirect(url_for("web.project_admin", pid=p.id) + "#updates")
+
+
+@bp.route("/admin/project-updates/<int:uid>/delete", methods=["POST"])
+@admin_required
+def project_update_delete(uid):
+    u = db.session.get(ProjectUpdate, uid) or abort(404)
+    pid = u.project_id
+    db.session.delete(u)
+    db.session.commit()
+    flash("Update removed.", "success")
+    return redirect(url_for("web.project_admin", pid=pid) + "#updates")
+
+
+@bp.route("/admin/requests/<int:rid>", methods=["POST"])
+@admin_required
+def change_request_update(rid):
+    r = db.session.get(ChangeRequest, rid) or abort(404)
+    status = request.form.get("status")
+    if status not in REQUEST_STATUS:
+        flash("Choose a valid status.", "error")
+    else:
+        r.status, r.admin_reply = status, clean(request.form.get("admin_reply"), 3000) or None
+        db.session.commit()
+        flash("Change request updated. The founder can see your reply.", "success")
+    return redirect(url_for("web.project_admin", pid=r.project_id) + "#changes")
+
+
+@bp.route("/admin/founders/<int:pid>/founders", methods=["POST"])
+@admin_required
+def project_founders(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    chosen = {int(x) for x in request.form.getlist("founders") if x.isdigit()}
+    for u in User.query.filter_by(role="founder").all():
+        if u.id in chosen:
+            u.project_id = p.id
+        elif u.project_id == p.id:
+            u.project_id = None
+    db.session.commit()
+    flash("Founder access updated.", "success")
+    return redirect(url_for("web.project_admin", pid=p.id))
+
+
+@bp.route("/admin/founders/<int:pid>/agreement", methods=["GET", "POST"])
+@admin_required
+def agreement_edit(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    a = p.agreement
+    v = {"title": a.title if a else f"{p.name} — Project Agreement", "body": a.body if a else DEFAULT_AGREEMENT}
+    error = None
+    if request.method == "POST":
+        v = {"title": clean(request.form.get("title"), 200), "body": (request.form.get("body") or "").strip()[:60000]}
+        if len(v["title"]) < 3 or len(v["body"]) < 20:
+            error = "The agreement needs a title and at least a few lines of text."
+        else:
+            if a is None:
+                a = Agreement(project_id=p.id, title=v["title"], body=v["body"], version=1, updated_by=g.user.id)
+                db.session.add(a)
+                msg = "Agreement published. The founder can now sign it."
+            elif (a.title, a.body) != (v["title"], v["body"]):
+                had_sigs = any(s.version == a.version for s in a.signatures)
+                a.title, a.body, a.version = v["title"], v["body"], a.version + 1
+                a.updated_by, a.updated_at = g.user.id, utcnow()
+                msg = f"Agreement updated to version {a.version}." + (" The founder must sign again." if had_sigs else "")
+            else:
+                msg = "No changes to save."
+            db.session.commit()
+            flash(msg, "success")
+            return redirect(url_for("web.agreement_edit", pid=p.id))
+    sig = signature_state(p)[1]
+    return render_template("agreement_edit.html", p=p, a=a, v=v, error=error, sig=sig)
+
+
+@bp.route("/admin/founders/<int:pid>/delete", methods=["POST"])
+@admin_required
+def project_delete(pid):
+    p = db.session.get(Project, pid) or abort(404)
+    if request.form.get("confirm") != "1":
+        flash("Tick the confirmation box to delete this project.", "error")
+        return redirect(url_for("web.project_admin", pid=p.id))
+    User.query.filter_by(project_id=p.id).update({User.project_id: None}, synchronize_session=False)
+    db.session.delete(p)
+    db.session.commit()
+    flash("Project deleted. Founder logins were kept; delete them from Team if needed.", "success")
+    return redirect(url_for("web.projects"))
+
+
+DEFAULT_AGREEMENT = """1. Scope of work
+Describe what will be built and delivered.
+
+2. Timeline
+Key milestones and the expected launch date.
+
+3. Fees and payment terms
+Total fee, payment schedule and due dates.
+
+4. Changes
+Change requests are submitted through the WorkPulse founder page. Changes outside the agreed scope may need a separate quote.
+
+5. Ownership and confidentiality
+Who owns the code and designs after full payment, and how both sides keep information confidential.
+
+6. Support
+What support is included after launch and for how long.
+
+By signing, the founder confirms they have read and agree to these terms."""
+
+
 # --------------------------------------------------------------------------- admin: daily records
 def records_range(args):
     today = local_today()
@@ -1252,7 +1648,8 @@ def register_filters(app):
 
     app.jinja_env.globals.update(
         STATUS=STATUS, PRIORITIES=PRIORITIES, SKILLS=SKILLS, SKILL_AREAS=SKILL_AREAS, WORK_TYPES=WORK_TYPES,
-        STAGES=STAGES, is_overdue=is_overdue, stage_index=stage_index, pr_number=pr_number,
+        STAGES=STAGES, ROLES=ROLES, PHASES=PHASES, PROJECT_STATUS=PROJECT_STATUS, MILESTONE_STATUS=MILESTONE_STATUS,
+        REQUEST_STATUS=REQUEST_STATUS, REQUEST_PRIORITY=REQUEST_PRIORITY, is_overdue=is_overdue, stage_index=stage_index, pr_number=pr_number,
         skill_score=skill_score, session_mins=lambda s: session_minutes(s, utcnow()))
 
     @app.context_processor
@@ -1260,6 +1657,7 @@ def register_filters(app):
         counts = {}
         if getattr(g, "user", None) is not None and g.user.role == "admin":
             counts["review"] = Assignment.query.filter_by(status="submitted").count()
+            counts["requests"] = ChangeRequest.query.filter_by(status="open").count()
         return {"nav_counts": counts}
 
 
@@ -1357,6 +1755,7 @@ def register_cli(app):
 
 DEMO_ADMIN = ("admin@example.com", "Admin-Demo-2026!")
 DEMO_MEMBER_PW = "Member-Demo-2026!"
+DEMO_FOUNDER = "farah@example.com"
 
 
 def demo_config():
@@ -1393,6 +1792,21 @@ def seed_demo():
     db.session.flush()
     for m in members:
         db.session.add(Assignment(task_id=t.id, user_id=m.id))
+    pr = Project(name="Acme Hiring App", summary="A two-sided hiring platform for schools and teachers.",
+                 live_url="https://example.com", phase="development", status="on_track", progress=58,
+                 status_note="Teacher profiles are done. Payments go live next week.",
+                 start_date=today - timedelta(days=20), target_date=today + timedelta(days=25))
+    db.session.add(pr)
+    db.session.flush()
+    for i, (title, st) in enumerate((("Discovery & requirements", "done"), ("Design approval", "done"),
+                                     ("Development", "in_progress"), ("Testing & your feedback", "pending"),
+                                     ("Launch", "pending"))):
+        db.session.add(Milestone(project_id=pr.id, title=title, status=st, sort_order=i))
+    db.session.add(ProjectUpdate(project_id=pr.id, author_id=1, body="Design approved. Development has started."))
+    db.session.add(Agreement(project_id=pr.id, title="Acme Hiring App — Project Agreement", body=DEFAULT_AGREEMENT,
+                             updated_by=1))
+    db.session.add(User(name="Farah Founder", email=DEMO_FOUNDER, role="founder", project_id=pr.id,
+                        password_hash=generate_password_hash(DEMO_MEMBER_PW)))
     db.session.commit()
 
 
@@ -1429,6 +1843,7 @@ if __name__ == "__main__":
         print("  Admin  : %s  /  %s" % DEMO_ADMIN)
         print("  Member : mia@example.com  /  %s" % DEMO_MEMBER_PW)
         print("  Member : raj@example.com  /  %s" % DEMO_MEMBER_PW)
+        print("  Founder: %s  /  %s" % (DEMO_FOUNDER, DEMO_MEMBER_PW))
     print("Press CTRL+C to stop.")
     print("=" * 62 + "\n")
     _app.run(host="127.0.0.1", port=_port, debug=False)

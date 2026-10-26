@@ -31,7 +31,7 @@
 
 <section class="card danger-zone">
   <div class="card-head"><h2><span class="card-ic" style="background:linear-gradient(135deg,#e11d48,#f97316)">{{ icon('trash', 18, 'a-wiggle') }}</span>Delete all WorkPulse data</h2></div>
-  <p class="muted">Start fresh: removes every team member, task, hour record and progress update. Admin accounts and the repository setting are kept.</p>
+  <p class="muted">Start fresh: removes every team member, founder, founder project, agreement, task, hour record and progress update. You can choose to delete the other admin accounts too. Your own account always stays.</p>
   <a class="btn btn-danger" href="{{ url_for('web.reset_data') }}">{{ icon('trash', 16) }} Continue to delete all data</a>
 </section>
 {% endblock %}

@@ -22,6 +22,18 @@ def post_task(admin, **over):
     return admin.post("/admin/tasks/new", data={**TASK, **over}, follow_redirects=False)
 
 
+@pytest.fixture()
+def evening(monkeypatch):
+    """Pin the clock to 6 PM India time so 5-hour sessions never cross midnight."""
+    import app as appmod
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    real = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=18, minute=0, second=0, microsecond=0)
+    fixed = real.astimezone(timezone.utc).replace(tzinfo=None)
+    monkeypatch.setattr(appmod, "utcnow", lambda: fixed)
+    return fixed
+
+
 def one_assignment(app, admin, email="mia@example.com"):
     post_task(admin, assignees=[str(uid(app, email))])
     with app.app_context():
@@ -221,9 +233,9 @@ def test_stale_session_capped_on_next_login(app):
         assert new.clock_out is None
 
 
-def test_target_shown_to_member_and_admin(app, mia, admin):
+def test_target_shown_to_member_and_admin(evening, app, mia, admin):
     with app.app_context():
-        s = AttendanceSession.query.one(); s.clock_in = utcnow() - timedelta(hours=5); db.session.commit()
+        s = AttendanceSession.query.one(); s.clock_in = evening - timedelta(hours=5); db.session.commit()
     html = mia.get("/dashboard").get_data(as_text=True)
     assert "Target achieved" in html and "YOUR WORK IS OBSERVED" in html
     a = admin.get("/dashboard").get_data(as_text=True)
@@ -279,7 +291,30 @@ def test_delete_member_removes_everything(app, admin, mia):
     admin_id = uid(app, "admin@example.com")
     admin.post(f"/admin/users/{admin_id}/delete", data={"confirm_email": "admin@example.com"})
     with app.app_context():
-        assert db.session.get(User, admin_id) is not None
+        assert db.session.get(User, admin_id) is not None  # cannot delete yourself
+
+
+def test_admin_can_delete_another_founder(app, admin):
+    with app.app_context():
+        db.session.add(User(name="Founder Two", email="f2@example.com", role="admin", password_hash=generate_password_hash(PW)))
+        db.session.commit()
+    f2 = app.test_client(); login(f2, "f2@example.com")
+    f2.post("/admin/tasks/new", data={**TASK, "all_team": "1"})
+    fid = uid(app, "f2@example.com")
+    assert admin.post(f"/admin/users/{fid}/delete", data={"confirm_email": "f2@example.com"}).status_code == 302
+    with app.app_context():
+        assert db.session.get(User, fid) is None
+        assert Task.query.one().created_by == uid(app, "admin@example.com")  # task handed over, not lost
+    assert f2.get("/dashboard").status_code == 302
+
+
+def test_wipe_can_include_other_founders(app, admin):
+    with app.app_context():
+        db.session.add(User(name="Founder Two", email="f2@example.com", role="admin", password_hash=generate_password_hash(PW)))
+        db.session.commit()
+    admin.post("/admin/reset", data={"phrase": "DELETE ALL DATA", "include_admins": "1"})
+    with app.app_context():
+        assert [u.email for u in User.query.all()] == ["admin@example.com"]
 
 
 def test_wipe_all_data_keeps_admins(app, admin, mia):
@@ -393,9 +428,9 @@ def test_settings_repo_validation(app, admin, mia):
     assert b"acme/app" in mia.get("/dashboard").data
 
 
-def test_records_and_csv_export(app, admin, mia):
+def test_records_and_csv_export(evening, app, admin, mia):
     with app.app_context():
-        s = AttendanceSession.query.one(); s.clock_in = utcnow() - timedelta(hours=5); s.clock_out = utcnow() - timedelta(hours=1)
+        s = AttendanceSession.query.one(); s.clock_in = evening - timedelta(hours=5); s.clock_out = evening - timedelta(hours=1)
         db.session.commit()
     html = admin.get("/admin/records?range=today").get_data(as_text=True)
     assert "Mia Member" in html and "Reached" in html
@@ -448,3 +483,110 @@ def test_placeholder_values_rejected(monkeypatch):
     monkeypatch.setenv("FLASK_SECRET_KEY", "replace-with-a-long-random-string-of-at-least-32-characters")
     with pytest.raises(ConfigError):
         create_app()
+
+
+# ---------------------------------------------------------------- founders
+from models import Agreement, AgreementSignature, ChangeRequest, Milestone, Project  # noqa: E402
+
+
+def make_founder(app, admin):
+    admin.post("/admin/founders/new", data={"name": "Acme App", "summary": "Hiring app", "live_url": "https://acme.example.com"})
+    with app.app_context():
+        pid = Project.query.one().id
+    r = admin.post("/admin/users/new", data={"name": "Fiona Founder", "email": "fiona@example.com", "password": PW,
+                                             "confirm_password": PW, "role": "founder", "project_id": str(pid)})
+    assert r.status_code == 302
+    c = app.test_client(); login(c, "fiona@example.com")
+    return pid, c
+
+
+def test_founder_sees_only_two_pages_and_no_attendance(app, admin):
+    pid, f = make_founder(app, admin)
+    html = f.get("/dashboard").get_data(as_text=True)
+    assert "Acme App" in html and "View live application" in html and "acme.example.com" in html
+    assert "YOUR WORK IS OBSERVED" not in html
+    assert f.get("/agreement").status_code == 200
+    for url in ("/attendance", "/welcome/0", "/admin/users", "/admin/founders", f"/admin/founders/{pid}", "/my-tasks/1"):
+        assert f.get(url).status_code in (403, 404), url
+    assert f.post("/clock-in").status_code == 403
+    with app.app_context():
+        assert AttendanceSession.query.count() == 0
+        assert Milestone.query.count() == 5
+    admin.get("/dashboard")  # consume the "account created" flash message
+    table = admin.get("/dashboard").get_data(as_text=True).split("Today's record")[1].split("</table>")[0]
+    assert "Fiona Founder" not in table  # founders are not in the attendance table
+
+
+def test_admin_controls_status_founder_sees_it(app, admin):
+    pid, f = make_founder(app, admin)
+    admin.post(f"/admin/founders/{pid}/status", data={"phase": "testing", "status": "at_risk", "progress": "72",
+                                                      "status_note": "Payment gateway review", "live_url": "https://new.example.com"})
+    admin.post(f"/admin/founders/{pid}/updates", data={"body": "Demo on Friday"})
+    with app.app_context():
+        mid = Milestone.query.first().id
+    admin.post(f"/admin/milestones/{mid}", data={"title": "Kickoff done", "status": "done", "action": "save"})
+    html = f.get("/dashboard").get_data(as_text=True)
+    assert "72" in html and "Needs attention" in html and "Payment gateway review" in html and "Demo on Friday" in html
+    assert "new.example.com" in html and "Kickoff done" in html
+    assert b"Preview" in admin.get(f"/admin/founders/{pid}/preview").data
+    assert b"whole number" in admin.post(f"/admin/founders/{pid}/status", data={"phase": "testing", "status": "on_track", "progress": "150"}, follow_redirects=True).data
+
+
+def test_change_request_flow(app, admin):
+    pid, f = make_founder(app, admin)
+    assert f.post("/requests", data={"title": "", "details": ""}).status_code == 400
+    assert f.post("/requests", data={"title": "Bigger button", "details": "On mobile", "priority": "high"}).status_code == 302
+    with app.app_context():
+        rid = ChangeRequest.query.one().id
+    assert b"Bigger button" in admin.get(f"/admin/founders/{pid}").data
+    admin.post(f"/admin/requests/{rid}", data={"status": "done", "admin_reply": "Shipped today"})
+    html = f.get("/dashboard").get_data(as_text=True)
+    assert "Shipped today" in html and "Done" in html
+
+
+def test_agreement_sign_and_resign_after_edit(app, admin):
+    pid, f = make_founder(app, admin)
+    assert b"being prepared" in f.get("/agreement").data
+    admin.post(f"/admin/founders/{pid}/agreement", data={"title": "Acme Agreement", "body": "1. Scope\nBuild the hiring app.\n2. Fees\nAs agreed."})
+    assert b"ready to sign" in f.get("/dashboard").data
+    assert b"Tick the box" in f.post("/agreement", data={"version": "1", "signed_name": "Fiona Founder"}).data
+    assert b"updated while you were reading" in f.post("/agreement", data={"version": "9", "agree": "1", "signed_name": "Fiona Founder"}).data
+    f.post("/agreement", data={"version": "1", "agree": "1", "signed_name": "Fiona Founder"})
+    with app.app_context():
+        s = AgreementSignature.query.one()
+        assert s.version == 1 and len(s.body_hash) == 64 and s.signed_name == "Fiona Founder"
+    assert b"Digitally" in f.get("/agreement").data
+    admin.post(f"/admin/founders/{pid}/agreement", data={"title": "Acme Agreement", "body": "1. Scope\nBuild the hiring app + admin.\n2. Fees\nAs agreed."})
+    with app.app_context():
+        assert Agreement.query.one().version == 2
+    assert b"sign version 2" in f.get("/agreement").data
+    f.post("/agreement", data={"version": "2", "agree": "1", "signed_name": "Fiona Founder"})
+    with app.app_context():
+        assert AgreementSignature.query.count() == 2
+
+
+def test_founder_role_needs_project_and_delete_founder(app, admin):
+    r = admin.post("/admin/users/new", data={"name": "No Project", "email": "np@example.com", "password": PW, "confirm_password": PW, "role": "founder"})
+    assert b"Choose the founder" in r.data
+    pid, f = make_founder(app, admin)
+    f.post("/requests", data={"title": "Change x", "details": "y", "priority": "low"})
+    fid = uid(app, "fiona@example.com")
+    assert admin.post(f"/admin/users/{fid}/delete", data={"confirm_email": "fiona@example.com"}).status_code == 302
+    with app.app_context():
+        assert db.session.get(User, fid) is None and Project.query.count() == 1 and ChangeRequest.query.count() == 0
+
+
+def test_wipe_removes_founders_and_projects(app, admin):
+    make_founder(app, admin)
+    admin.post("/admin/reset", data={"phrase": "DELETE ALL DATA"})
+    with app.app_context():
+        assert Project.query.count() == 0 and User.query.filter_by(role="founder").count() == 0
+
+
+def test_founder_pages_render(app, admin):
+    pid, f = make_founder(app, admin)
+    for url in ("/admin/founders", "/admin/founders/new", f"/admin/founders/{pid}", f"/admin/founders/{pid}/edit",
+                f"/admin/founders/{pid}/agreement", f"/admin/founders/{pid}/preview", "/admin/users/new?role=founder"):
+        assert admin.get(url).status_code == 200, url
+    admin.post(f"/admin/founders/{pid}/delete", data={"confirm": "1"})
+    assert b"set up</span>" in f.get("/dashboard").data

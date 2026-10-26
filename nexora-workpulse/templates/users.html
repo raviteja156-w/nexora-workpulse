@@ -1,4 +1,4 @@
-```html
+
 {% extends 'base.html' %}
 {% from '_icons.html' import icon %}
 {% from '_ui.html' import csrf, avatar, skill_chips %}
@@ -10,10 +10,12 @@
   <div>
     <div class="eyebrow">
       {{ icon('users', 14, 'a-float') }}
-      {{ users|selectattr('role', 'equalto', 'member')|list|length }} member(s)
+      {{ users|selectattr('role', 'equalto', 'member')|list|length }}
+      member(s)
     </div>
 
     <h1>Your <span class="grad">team</span></h1>
+
     <p class="muted">
       Skills come from each member's first-sign-in self-rating.
     </p>
@@ -21,7 +23,7 @@
 
   <div class="head-actions">
     <a class="btn btn-primary btn-lg" href="{{ url_for('web.user_new') }}">
-      {{ icon('plus', 18) }} Add team member
+      {{ icon('plus', 18) }} Add person
     </a>
   </div>
 </div>
@@ -30,22 +32,21 @@
   {% for u in users %}
   <article
     class="person-card {{ 'off' if not u.is_active }}"
-    data-user-hue="{{ u.name|hue }}"
+    data-hue="{{ u.name|hue }}"
     data-animation-delay="{{ loop.index0 * 0.05 }}"
   >
     <div class="row">
       {{ avatar(u, 'lg') }}
 
-      <div style="flex:1; min-width:0">
+      <div style="flex:1;min-width:0">
         <b style="font-size:1.05rem">{{ u.name }}</b>
-
-        <small style="display:block; overflow:hidden; text-overflow:ellipsis">
+        <small style="display:block;overflow:hidden;text-overflow:ellipsis">
           {{ u.email }}
         </small>
       </div>
 
-      <span class="badge {{ 'badge-violet' if u.role == 'admin' else 'badge-green' if u.is_active else 'badge-red' }}">
-        {{ 'Admin' if u.role == 'admin' else 'Active' if u.is_active else 'Disabled' }}
+      <span class="badge {{ 'badge-red' if not u.is_active else 'badge-violet' if u.role == 'admin' else 'badge-amber' if u.role == 'founder' else 'badge-green' }}">
+        {{ 'Disabled' if not u.is_active else ROLES[u.role] }}
       </span>
     </div>
 
@@ -81,6 +82,22 @@
       </div>
     </div>
 
+    {% elif u.role == 'founder' %}
+    <p style="margin:12px 0">
+      {{ icon('rocket', 14) }}
+
+      {% if u.project %}
+        <a class="link" href="{{ url_for('web.project_admin', pid=u.project_id) }}">
+          {{ u.project.name }}
+        </a>
+      {% else %}
+        <span class="muted">No project linked</span>
+      {% endif %}
+
+      <br>
+      <small>Last sign-in {{ u.last_login_at|ldt }}</small>
+    </p>
+
     {% else %}
     <p class="muted" style="margin:12px 0">
       Last sign-in {{ u.last_login_at|ldt }}
@@ -89,10 +106,7 @@
 
     {% if u.id != g.user.id %}
     <div class="acts">
-      <form
-        method="post"
-        action="{{ url_for('web.user_toggle', uid=u.id) }}"
-      >
+      <form method="post" action="{{ url_for('web.user_toggle', uid=u.id) }}">
         {{ csrf() }}
 
         <button
@@ -104,20 +118,12 @@
         </button>
       </form>
 
-      {% if u.role == 'member' %}
-      <form
-        method="post"
-        action="{{ url_for('web.user_delete', uid=u.id) }}"
-        class="delete-user-form"
-        data-user-name="{{ u.name }}"
+      <a
+        class="btn btn-sm btn-danger"
+        href="{{ url_for('web.user_delete', uid=u.id) }}"
       >
-        {{ csrf() }}
-
-        <button type="submit" class="btn btn-sm btn-danger">
-          {{ icon('trash', 14) }} Delete
-        </button>
-      </form>
-      {% endif %}
+        {{ icon('trash', 14) }} Delete
+      </a>
     </div>
 
     <form
@@ -144,7 +150,8 @@
 
     {% else %}
     <p class="muted" style="margin-top:12px">
-      {{ icon('user', 14) }} This is you
+      {{ icon('user', 14) }}
+      This is you — another admin can delete this account
     </p>
     {% endif %}
   </article>
@@ -153,40 +160,18 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  // Apply card animation delays without embedding Jinja in CSS.
-  document.querySelectorAll('.person-card[data-animation-delay]').forEach(function (card) {
+  document.querySelectorAll('.person-card[data-hue]').forEach(function (card) {
+    const hue = Number(card.dataset.hue);
     const delay = Number(card.dataset.animationDelay);
+
+    if (Number.isFinite(hue)) {
+      card.style.setProperty('--h', hue);
+    }
 
     if (Number.isFinite(delay) && delay >= 0) {
       card.style.animationDelay = delay + 's';
     }
   });
-
-  // Apply the dynamic hue as a CSS custom property.
-  document.querySelectorAll('.person-card[data-user-hue]').forEach(function (card) {
-    const hue = card.dataset.userHue;
-
-    if (hue && /^[\w.-]+$/.test(hue)) {
-      card.style.setProperty('--h', hue);
-    }
-  });
-
-  // Confirm before deleting a team member.
-  document.querySelectorAll('.delete-user-form').forEach(function (form) {
-    form.addEventListener('submit', function (event) {
-      const userName = form.dataset.userName || 'this team member';
-
-      const confirmed = window.confirm(
-        'Are you sure you want to delete ' + userName +
-        '? This action cannot be undone.'
-      );
-
-      if (!confirmed) {
-        event.preventDefault();
-      }
-    });
-  });
 });
 </script>
 {% endblock %}
-```

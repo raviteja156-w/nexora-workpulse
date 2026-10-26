@@ -1,6 +1,12 @@
 -- NEXORA WORKPULSE v3: founder accounts, founder projects, change requests, agreements with digital signature.
 -- Additive: new tables and one new column. The role check is widened to allow 'founder'.
 ALTER TABLE nwp_users DROP CONSTRAINT IF EXISTS ck_nwp_users_role;
+-- Clean up role values typed by hand (e.g. 'Founder', ' admin ', 'co-founder') before enforcing the rule.
+ALTER TABLE nwp_users ALTER COLUMN role TYPE VARCHAR(20);
+UPDATE nwp_users SET role = lower(trim(role)) WHERE role IS DISTINCT FROM lower(trim(role));
+UPDATE nwp_users SET role = 'admin' WHERE role IN ('administrator','superadmin','super_admin','super admin','owner');
+UPDATE nwp_users SET role = 'founder' WHERE role IN ('founders','co-founder','cofounder','co founder','client','customer');
+UPDATE nwp_users SET role = 'member' WHERE role IS NULL OR role NOT IN ('admin','member','founder');
 ALTER TABLE nwp_users ADD CONSTRAINT ck_nwp_users_role CHECK (role IN ('admin','member','founder'));
 
 CREATE TABLE IF NOT EXISTS nwp_projects (

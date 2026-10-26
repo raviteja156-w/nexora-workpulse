@@ -18,7 +18,7 @@ class User(db.Model):
     name = db.Column(db.String(80), nullable=False)
     email = db.Column(db.String(254), nullable=False, unique=True)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(10), nullable=False, default="member")
+    role = db.Column(db.String(20), nullable=False, default="member")
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     session_version = db.Column(db.Integer, nullable=False, default=1)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)

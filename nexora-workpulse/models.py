@@ -31,7 +31,7 @@ class User(db.Model):
     skill_frontend = db.Column(db.String(10))
     onboarded_at = db.Column(db.DateTime)
     # Founders (clients) belong to one project and only see its status page and agreement.
-    project_id = db.Column(db.Integer, db.ForeignKey("nwp_projects.id", ondelete="SET NULL"))
+    project_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="SET NULL"))
     project = db.relationship("Project", back_populates="founders", foreign_keys=[project_id])
     __table_args__ = (db.CheckConstraint("role IN ('admin','member','founder')", name="ck_nwp_users_role"),)
 
@@ -186,7 +186,7 @@ class AuditLog(db.Model):
 # --------------------------------------------------------------------------- founder projects
 class Project(db.Model):
     """A client/founder project. Everything here is controlled by admins and shown on the founder's page."""
-    __tablename__ = "nwp_projects"
+    __tablename__ = "nwp_founder_projects"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
     summary = db.Column(db.Text)
@@ -210,36 +210,36 @@ class Project(db.Model):
 
 
 class Milestone(db.Model):
-    __tablename__ = "nwp_milestones"
+    __tablename__ = "nwp_founder_milestones"
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("nwp_projects.id", ondelete="CASCADE"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="CASCADE"), nullable=False)
     title = db.Column(db.String(150), nullable=False)
     due_date = db.Column(db.Date)
     status = db.Column(db.String(15), nullable=False, default="pending")  # pending | in_progress | done
     sort_order = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
     project = db.relationship("Project", back_populates="milestones")
-    __table_args__ = (Index("ix_nwp_milestones_project", "project_id"),)
+    __table_args__ = (Index("ix_nwp_fmilestones_project", "project_id"),)
 
 
 class ProjectUpdate(db.Model):
     """A news/status post from the admin that founders read on their page."""
-    __tablename__ = "nwp_project_updates"
+    __tablename__ = "nwp_founder_updates"
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("nwp_projects.id", ondelete="CASCADE"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="CASCADE"), nullable=False)
     author_id = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
     body = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
     project = db.relationship("Project", back_populates="updates")
     author = db.relationship("User")
-    __table_args__ = (Index("ix_nwp_pupdates_project", "project_id"),)
+    __table_args__ = (Index("ix_nwp_fupdates_project", "project_id"),)
 
 
 class ChangeRequest(db.Model):
     """A change the founder asks for after viewing the live application."""
-    __tablename__ = "nwp_change_requests"
+    __tablename__ = "nwp_founder_requests"
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("nwp_projects.id", ondelete="CASCADE"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="CASCADE"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
     title = db.Column(db.String(150), nullable=False)
     details = db.Column(db.Text, nullable=False)
@@ -251,14 +251,14 @@ class ChangeRequest(db.Model):
     updated_at = db.Column(db.DateTime, nullable=False, default=utcnow, onupdate=utcnow)
     project = db.relationship("Project", back_populates="requests")
     user = db.relationship("User")
-    __table_args__ = (Index("ix_nwp_requests_project", "project_id", "status"),)
+    __table_args__ = (Index("ix_nwp_frequests_project", "project_id", "status"),)
 
 
 class Agreement(db.Model):
     """Agreement text written by the admin. Every edit raises the version, so founders must sign again."""
-    __tablename__ = "nwp_agreements"
+    __tablename__ = "nwp_founder_agreements"
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("nwp_projects.id", ondelete="CASCADE"), nullable=False, unique=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="CASCADE"), nullable=False, unique=True)
     title = db.Column(db.String(200), nullable=False)
     body = db.Column(db.Text, nullable=False)
     version = db.Column(db.Integer, nullable=False, default=1)
@@ -272,9 +272,9 @@ class Agreement(db.Model):
 
 class AgreementSignature(db.Model):
     """Digital approval: typed legal name + consent, with time, IP and a fingerprint of the exact text signed."""
-    __tablename__ = "nwp_agreement_signatures"
+    __tablename__ = "nwp_founder_signatures"
     id = db.Column(db.Integer, primary_key=True)
-    agreement_id = db.Column(db.Integer, db.ForeignKey("nwp_agreements.id", ondelete="CASCADE"), nullable=False)
+    agreement_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_agreements.id", ondelete="CASCADE"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("nwp_users.id"))
     version = db.Column(db.Integer, nullable=False)
     signed_name = db.Column(db.String(120), nullable=False)
@@ -284,4 +284,4 @@ class AgreementSignature(db.Model):
     signed_at = db.Column(db.DateTime, nullable=False, default=utcnow)
     agreement = db.relationship("Agreement", back_populates="signatures")
     user = db.relationship("User")
-    __table_args__ = (Index("ix_nwp_signatures_agreement", "agreement_id"),)
+    __table_args__ = (Index("ix_nwp_fsignatures_agreement", "agreement_id"),)

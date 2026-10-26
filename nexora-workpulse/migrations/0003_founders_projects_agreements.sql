@@ -1,5 +1,5 @@
 -- NEXORA WORKPULSE v3: founder accounts, founder projects, change requests, agreements with digital signature.
--- Additive: new tables and one new column. The role check is widened to allow 'founder'.
+-- Additive: new tables (all named nwp_founder_*) and one new column. The role check is widened to allow 'founder'.
 ALTER TABLE nwp_users DROP CONSTRAINT IF EXISTS ck_nwp_users_role;
 -- Clean up role values typed by hand (e.g. 'Founder', ' admin ', 'co-founder') before enforcing the rule.
 ALTER TABLE nwp_users ALTER COLUMN role TYPE VARCHAR(20);
@@ -9,7 +9,7 @@ UPDATE nwp_users SET role = 'founder' WHERE role IN ('founders','co-founder','co
 UPDATE nwp_users SET role = 'member' WHERE role IS NULL OR role NOT IN ('admin','member','founder');
 ALTER TABLE nwp_users ADD CONSTRAINT ck_nwp_users_role CHECK (role IN ('admin','member','founder'));
 
-CREATE TABLE IF NOT EXISTS nwp_projects (
+CREATE TABLE IF NOT EXISTS nwp_founder_projects (
 	id SERIAL NOT NULL, 
 	name VARCHAR(120) NOT NULL, 
 	summary TEXT, 
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS nwp_projects (
 	PRIMARY KEY (id)
 );
 
-CREATE TABLE IF NOT EXISTS nwp_milestones (
+CREATE TABLE IF NOT EXISTS nwp_founder_milestones (
 	id SERIAL NOT NULL, 
 	project_id INTEGER NOT NULL, 
 	title VARCHAR(150) NOT NULL, 
@@ -34,25 +34,25 @@ CREATE TABLE IF NOT EXISTS nwp_milestones (
 	sort_order INTEGER NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(project_id) REFERENCES nwp_projects (id) ON DELETE CASCADE
+	FOREIGN KEY(project_id) REFERENCES nwp_founder_projects (id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS ix_nwp_milestones_project ON nwp_milestones (project_id);
+CREATE INDEX IF NOT EXISTS ix_nwp_fmilestones_project ON nwp_founder_milestones (project_id);
 
-CREATE TABLE IF NOT EXISTS nwp_project_updates (
+CREATE TABLE IF NOT EXISTS nwp_founder_updates (
 	id SERIAL NOT NULL, 
 	project_id INTEGER NOT NULL, 
 	author_id INTEGER, 
 	body TEXT NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(project_id) REFERENCES nwp_projects (id) ON DELETE CASCADE, 
+	FOREIGN KEY(project_id) REFERENCES nwp_founder_projects (id) ON DELETE CASCADE, 
 	FOREIGN KEY(author_id) REFERENCES nwp_users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_nwp_pupdates_project ON nwp_project_updates (project_id);
+CREATE INDEX IF NOT EXISTS ix_nwp_fupdates_project ON nwp_founder_updates (project_id);
 
-CREATE TABLE IF NOT EXISTS nwp_change_requests (
+CREATE TABLE IF NOT EXISTS nwp_founder_requests (
 	id SERIAL NOT NULL, 
 	project_id INTEGER NOT NULL, 
 	user_id INTEGER, 
@@ -65,13 +65,13 @@ CREATE TABLE IF NOT EXISTS nwp_change_requests (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(project_id) REFERENCES nwp_projects (id) ON DELETE CASCADE, 
+	FOREIGN KEY(project_id) REFERENCES nwp_founder_projects (id) ON DELETE CASCADE, 
 	FOREIGN KEY(user_id) REFERENCES nwp_users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_nwp_requests_project ON nwp_change_requests (project_id, status);
+CREATE INDEX IF NOT EXISTS ix_nwp_frequests_project ON nwp_founder_requests (project_id, status);
 
-CREATE TABLE IF NOT EXISTS nwp_agreements (
+CREATE TABLE IF NOT EXISTS nwp_founder_agreements (
 	id SERIAL NOT NULL, 
 	project_id INTEGER NOT NULL, 
 	title VARCHAR(200) NOT NULL, 
@@ -82,11 +82,11 @@ CREATE TABLE IF NOT EXISTS nwp_agreements (
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
 	UNIQUE (project_id), 
-	FOREIGN KEY(project_id) REFERENCES nwp_projects (id) ON DELETE CASCADE, 
+	FOREIGN KEY(project_id) REFERENCES nwp_founder_projects (id) ON DELETE CASCADE, 
 	FOREIGN KEY(updated_by) REFERENCES nwp_users (id)
 );
 
-CREATE TABLE IF NOT EXISTS nwp_agreement_signatures (
+CREATE TABLE IF NOT EXISTS nwp_founder_signatures (
 	id SERIAL NOT NULL, 
 	agreement_id INTEGER NOT NULL, 
 	user_id INTEGER, 
@@ -97,10 +97,10 @@ CREATE TABLE IF NOT EXISTS nwp_agreement_signatures (
 	user_agent VARCHAR(300), 
 	signed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
-	FOREIGN KEY(agreement_id) REFERENCES nwp_agreements (id) ON DELETE CASCADE, 
+	FOREIGN KEY(agreement_id) REFERENCES nwp_founder_agreements (id) ON DELETE CASCADE, 
 	FOREIGN KEY(user_id) REFERENCES nwp_users (id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_nwp_signatures_agreement ON nwp_agreement_signatures (agreement_id);
+CREATE INDEX IF NOT EXISTS ix_nwp_fsignatures_agreement ON nwp_founder_signatures (agreement_id);
 
-ALTER TABLE nwp_users ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES nwp_projects (id) ON DELETE SET NULL;
+ALTER TABLE nwp_users ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES nwp_founder_projects (id) ON DELETE SET NULL;

@@ -3,48 +3,62 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#070816">
 <title>{% block title %}Dashboard{% endblock %} | NEXORA WORKPULSE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23ec4899'/%3E%3Cpath d='M21 12h-4l-3 7-4-14-3 7H3' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
-<body class="{% block body_class %}{% endblock %}">
-<div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
-{% if g.user %}
+<body>
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+{% if g.user and not bare %}
 {% set ep = request.endpoint or '' %}
-<header class="topbar">
-  <a class="brand" href="{{ url_for('web.dashboard') }}"><span class="logo">{{ icon('pulse', 20) }}</span><span>NEXORA <b>WORKPULSE</b></span></a>
-  <input type="checkbox" id="nav-toggle" class="nav-toggle">
-  <label for="nav-toggle" class="burger" aria-label="Toggle navigation"><span></span><span></span><span></span></label>
-  <nav class="nav" aria-label="Main">
-    <a href="{{ url_for('web.dashboard') }}" class="{{ 'on' if ep == 'web.dashboard' }}">Dashboard</a>
-    {% if g.user.role == 'admin' %}
-      <a href="{{ url_for('web.tasks') }}" class="{{ 'on' if ep.startswith('web.task') }}">Tasks</a>
-      <a href="{{ url_for('web.users') }}" class="{{ 'on' if ep.startswith('web.user') }}">Team</a>
-      <a href="{{ url_for('web.acknowledgements') }}" class="{{ 'on' if ep == 'web.acknowledgements' }}">Acknowledgements</a>
-      <a href="{{ url_for('web.reports') }}" class="{{ 'on' if ep == 'web.reports' }}">Reports</a>
-      <a href="{{ url_for('web.audit_log') }}" class="{{ 'on' if ep == 'web.audit_log' }}">Audit</a>
-      <a href="{{ url_for('web.project_admin') }}" class="{{ 'on' if ep.startswith('web.project_') }}">Project Control</a>
-    {% elif g.user.role == 'member' %}
-      <a href="{{ url_for('web.attendance_history') }}" class="{{ 'on' if ep == 'web.attendance_history' }}">Attendance</a>
-    {% else %}
-      <a href="{{ url_for('web.project_agreement') }}" class="{{ 'on' if ep == 'web.project_agreement' }}">Agreement</a>
-    {% endif %}
-    <a href="{{ url_for('web.change_password') }}" class="{{ 'on' if ep == 'web.change_password' }}">Password</a>
-    <form method="post" action="{{ url_for('web.logout') }}" class="nav-user">
+<div class="shell">
+  <input type="checkbox" id="nav-toggle" class="nav-toggle" aria-label="Open menu">
+  <aside class="side" aria-label="Main navigation">
+    <a class="brand" href="{{ url_for('web.dashboard') }}"><span class="logo">{{ icon('pulse', 22, 'a-beat') }}</span><span>NEXORA<br><small>WORKPULSE</small></span></a>
+    <nav class="nav">
+      <a href="{{ url_for('web.dashboard') }}" class="{{ 'on' if ep == 'web.dashboard' }}"><span class="ni">{{ icon('home', 17) }}</span>Dashboard</a>
+      {% if g.user.role == 'admin' %}
+        <a href="{{ url_for('web.reports') }}" class="{{ 'on' if ep == 'web.reports' }}"><span class="ni">{{ icon('calendar', 17) }}</span>Daily records</a>
+        <a href="{{ url_for('web.tasks') }}" class="{{ 'on' if ep.startswith('web.task') }}"><span class="ni">{{ icon('tasks', 17) }}</span>Tasks{% if nav_counts.review %}<span class="count">{{ nav_counts.review }}</span>{% endif %}</a>
+        <a href="{{ url_for('web.users') }}" class="{{ 'on' if ep.startswith('web.user') }}"><span class="ni">{{ icon('users', 17) }}</span>Team</a>
+        <div class="nav-label">Setup</div>
+        <a href="{{ url_for('web.settings') }}" class="{{ 'on' if ep in ('web.settings', 'web.reset_data') }}"><span class="ni">{{ icon('github', 17) }}</span>GitHub &amp; data</a>
+      {% else %}
+        <a href="{{ url_for('web.attendance_history') }}" class="{{ 'on' if ep == 'web.attendance_history' }}"><span class="ni">{{ icon('clock', 17) }}</span>My hours</a>
+        <a href="{{ url_for('web.onboarding', step=1) }}" class="{{ 'on' if ep == 'web.onboarding' }}"><span class="ni">{{ icon('sparkles', 17) }}</span>My skills</a>
+      {% endif %}
+      <a href="{{ url_for('web.change_password') }}" class="{{ 'on' if ep == 'web.change_password' }}"><span class="ni">{{ icon('key', 17) }}</span>Password</a>
+    </nav>
+    <form method="post" action="{{ url_for('web.logout') }}" class="side-user">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <span class="who">{{ g.user.name }}</span>
-      <button class="btn btn-ghost btn-sm" type="submit">Sign out</button>
+      <span class="avatar sm" style="--h: {{ g.user.name|hue }}">{{ g.user.name|initials }}</span>
+      <span class="who"><b>{{ g.user.name }}</b><small>{{ 'Administrator' if g.user.role == 'admin' else 'Team member' }}</small></span>
+      <button class="icon-btn" type="submit" title="Sign out" aria-label="Sign out">{{ icon('logout', 17) }}</button>
     </form>
-  </nav>
-</header>
+  </aside>
+  <label for="nav-toggle" class="scrim" aria-hidden="true"></label>
+  <div class="main">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('web.dashboard') }}"><span class="logo">{{ icon('pulse', 18, 'a-beat') }}</span><span>NEXORA <small>WORKPULSE</small></span></a>
+      <label for="nav-toggle" class="burger" aria-label="Open menu">{{ icon('menu', 20) }}</label>
+    </header>
+    <main class="container">
+      {% with msgs = get_flashed_messages(with_categories=true) %}
+        {% for cat, m in msgs %}<div class="flash flash-{{ cat }}" role="status">{{ icon({'success': 'check', 'error': 'alert', 'warning': 'alert'}.get(cat, 'info'), 18) }}<span>{{ m }}</span></div>{% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="foot">NEXORA WORKPULSE &middot; Hours are recorded by the server from sign-in to sign-out, minus pauses.</footer>
+  </div>
+</div>
+{% else %}
+{% block bare %}{% endblock %}
 {% endif %}
-<main class="container">
-  {% with msgs = get_flashed_messages(with_categories=true) %}
-    {% for cat, m in msgs %}<div class="flash flash-{{ cat }}" role="status">{{ m }}</div>{% endfor %}
-  {% endwith %}
-  {% block content %}{% endblock %}
-</main>
-<footer class="foot">NEXORA WORKPULSE &middot; Recorded session time measures attendance, not continuous productivity. Task updates and deliverables are reviewed separately.</footer>
 </body>
 </html>

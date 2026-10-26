@@ -1,14 +1,17 @@
-"""NEXORA WORKPULSE - Team Work & Attendance Monitoring Portal (Flask).
+"""NEXORA WORKPULSE - Team Work & Attendance Portal (Flask).
 
-Run locally:   flask --app app run --debug
+Run locally:   python app.py            (demo mode when no .env exists)
 Production:    gunicorn "app:create_app()"
-CLI:           flask --app app init-db | create-admin
+CLI:           flask --app app init-db | create-admin | wipe-data
 """
 import csv
 import io
+import json
 import os
 import re
 import secrets
+import urllib.error
+import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -16,29 +19,38 @@ from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Blueprint, Flask, Response, abort, current_app, flash, g, redirect,
-                   render_template, request, session, url_for, send_from_directory, send_file)
+                   render_template, request, session, url_for)
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFError, CSRFProtect
-from sqlalchemy import func, text
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from models import (Acknowledgement, AgreementConfirmation, Assignment, AssignmentReview, AttendanceSession, AuditLog,
-                    BreakRecord, ProjectAgreement, ProjectFile, ProjectStage, ProjectUpdate, ProjectNotice, ProjectNoticeAcknowledgement, Task, User, db, utcnow)
+from models import (Acknowledgement, Assignment, AssignmentReview, AttendanceSession, AuditLog,
+                    BreakRecord, Setting, Task, TaskUpdate, User, db, utcnow)
 
 
 class ConfigError(RuntimeError):
     """Raised when required configuration is missing or invalid."""
 
 
-STATUS = {"not_started": "Not Started", "in_progress": "In Progress", "submitted": "Submitted",
-          "completed": "Completed", "needs_changes": "Needs Changes"}
+STATUS = {"not_started": "Not started", "in_progress": "In progress", "submitted": "Completed - awaiting review",
+          "completed": "Done & approved", "needs_changes": "Needs changes"}
 PRIORITIES = {"low": "Low", "medium": "Medium", "high": "High", "urgent": "Urgent"}
+SKILLS = {"moderate": ("Moderate", 1), "good": ("Good enough", 2), "high": ("High", 3)}
+SKILL_AREAS = [("backend", "Backend operations", "skill_backend"),
+               ("database", "Database management", "skill_database"),
+               ("frontend", "Frontend development", "skill_frontend")]
+WORK_TYPES = {"backend": "Backend", "database": "Database", "frontend": "Frontend",
+              "fullstack": "Full-stack", "other": "General / other"}
+STAGES = ["Assigned", "Working", "Pull request", "Completed", "Approved"]
 MIN_PASSWORD = 12
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)(?:[/?#].*)?$")
+REPO_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+WIPE_PHRASE = "DELETE ALL DATA"
 
 csrf = CSRFProtect()
 limiter = Limiter(get_remote_address, default_limits=[], storage_uri="memory://")
@@ -61,6 +73,12 @@ def normalize_database_url(raw):
         pw = pw[1:-1]
     pw = quote(unquote(pw), safe="")  # makes @ # / ? etc. in the password safe
     return f"postgresql+psycopg2://{user}:{pw}@{host}/{dbname or 'postgres'}{query or ''}"
+
+
+def github_config():
+    return {"GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "").strip(),
+            "GITHUB_REPO_URL": os.environ.get("GITHUB_REPO_URL", "").strip(),
+            "GITHUB_MERGE_METHOD": os.environ.get("GITHUB_MERGE_METHOD", "merge").strip() or "merge"}
 
 
 def load_config():
@@ -93,8 +111,8 @@ def load_config():
         "DAILY_TARGET_MINUTES": int(hours * 60),
         "SESSION_MAX_HOURS": max_hours,
         "DEV_MODE": dev,
-        "LIVE_APPLICATION_URL": os.environ.get("LIVE_APPLICATION_URL", "").strip(),
         "SESSION_COOKIE_SECURE": not dev,
+        **github_config(),
     }
 
 
@@ -108,10 +126,10 @@ def create_app(test_config=None):
             pass
         app.config.update(load_config())
     else:
-        app.config.update(test_config)
+        app.config.update({**github_config(), **test_config})
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
-        PERMANENT_SESSION_LIFETIME=timedelta(hours=8), MAX_CONTENT_LENGTH=25 * 1024 * 1024,
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=14), MAX_CONTENT_LENGTH=256 * 1024,
         WTF_CSRF_TIME_LIMIT=None, SQLALCHEMY_TRACK_MODIFICATIONS=False,
     )
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # Render terminates TLS
@@ -129,7 +147,8 @@ def create_app(test_config=None):
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "same-origin"
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; "
             "script-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'")
         if not app.config.get("DEV_MODE") and not app.config.get("TESTING"):
             resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -169,7 +188,7 @@ def max_session():
 
 
 def session_minutes(s, now):
-    """Recorded minutes = (clock_out or now, capped) - clock_in - breaks. Server-side only."""
+    """Recorded minutes = (clock_out or now, capped) - clock_in - pauses. Server-side only."""
     end = s.clock_out or min(now, s.clock_in + max_session())
     total = (end - s.clock_in).total_seconds()
     for b in s.breaks:
@@ -189,7 +208,7 @@ def empty_day():
 
 
 def build_daily(user_ids, start, end, now=None):
-    """Aggregate attendance per (user_id, local date). A session belongs to its clock-in day."""
+    """Aggregate attendance per (user_id, local date). A session belongs to its start day."""
     now = now or utcnow()
     lo, hi = day_bounds(start)[0], day_bounds(end)[1]
     sessions = (AttendanceSession.query
@@ -226,10 +245,46 @@ def add_carryover(user_ids, daily, today, now):
     return daily
 
 
-def attendance_status(day):
+def day_state(day, met):
+    """One plain label per member-day: what the admin actually wants to know."""
     if day["active"]:
-        return "On Break" if day["on_break"] else "Clocked In"
-    return "Clocked Out" if day["sessions"] else "Not Started"
+        return ("paused", "Paused") if day["on_break"] else ("working", "Working now")
+    if not day["sessions"]:
+        return "absent", "Absent"
+    return ("reached", "Target reached") if met else ("missed", "Target missed")
+
+
+def first_day(user):
+    return to_local(user.first_login_at).date() if user.first_login_at else None
+
+
+def daily_records(members, start, end, now=None):
+    """One row per member per day, from the member's first sign-in day only (earlier days are never 'absent')."""
+    now, today = now or utcnow(), local_today()
+    ids = [m.id for m in members]
+    daily = build_daily(ids, start, end, now)
+    if start <= today <= end:
+        add_carryover(ids, daily, today, now)
+    updates = {}
+    for u in (TaskUpdate.query.filter(TaskUpdate.user_id.in_(ids), TaskUpdate.update_date >= start,
+                                      TaskUpdate.update_date <= end).order_by(TaskUpdate.created_at).all()):
+        updates.setdefault((u.user_id, u.update_date), []).append(u)
+    tgt, rows = target_minutes(), []
+    for m in members:
+        fd = first_day(m)
+        if not fd:
+            continue
+        d, last = max(start, fd), min(end, today)
+        while d <= last:
+            day = daily.get((m.id, d), empty_day())
+            met = day["minutes"] >= tgt
+            key, label = day_state(day, met)
+            rows.append(dict(date=d, user=m, day=day, minutes=day["minutes"], met=met, state=key, label=label,
+                             pct=min(100, int(day["minutes"] * 100 / tgt)) if tgt else 100,
+                             updates=updates.get((m.id, d), [])))
+            d += timedelta(days=1)
+    rows.sort(key=lambda r: (r["date"], r["user"].name.lower()), reverse=True)
+    return rows
 
 
 # --------------------------------------------------------------------------- generic helpers
@@ -249,12 +304,6 @@ def valid_url(value):
     return p.scheme in ("http", "https") and bool(p.netloc) and len(value) <= 500 and " " not in value
 
 
-def audit(action, detail="", user_id=None):
-    uid = user_id if user_id is not None else (g.user.id if getattr(g, "user", None) else None)
-    db.session.add(AuditLog(user_id=uid, action=action, detail=detail[:500],
-                            ip_address=(request.remote_addr or "")[:45]))
-
-
 def csv_safe(value):
     s = "" if value is None else str(value)
     return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
@@ -272,7 +321,108 @@ def check_new_password(pw, confirm):
     return None
 
 
+def stage_index(a):
+    if a.status == "completed":
+        return 4
+    if a.status == "submitted":
+        return 3
+    if a.pr_url:
+        return 2
+    return 1 if a.status in ("in_progress", "needs_changes") else 0
+
+
+# --------------------------------------------------------------------------- skills & suggestions
+def skill_score(user, area):
+    if area == "fullstack":
+        return sum(skill_score(user, a) for a, _, _ in SKILL_AREAS)
+    if area not in ("backend", "database", "frontend"):
+        return 0
+    lvl = getattr(user, f"skill_{area}")
+    return SKILLS[lvl][1] if lvl in SKILLS else 0
+
+
+def suggestions(members, open_counts):
+    """Per work type: members ranked by self-rated skill, then by fewest open tasks."""
+    out = {}
+    for wt in ("backend", "database", "frontend", "fullstack"):
+        ranked = sorted((m for m in members if skill_score(m, wt) > 0),
+                        key=lambda m: (-skill_score(m, wt), open_counts.get(m.id, 0), m.name.lower()))
+        out[wt] = ranked[:4]
+    return out
+
+
+def open_task_counts(ids):
+    counts = {}
+    for a in Assignment.query.filter(Assignment.user_id.in_(list(ids)), Assignment.status != "completed").all():
+        counts[a.user_id] = counts.get(a.user_id, 0) + 1
+    return counts
+
+
+# --------------------------------------------------------------------------- settings & GitHub
+def get_setting(key, default=""):
+    row = db.session.get(Setting, key)
+    return row.value if row and row.value else default
+
+
+def set_setting(key, value):
+    row = db.session.get(Setting, key) or Setting(key=key)
+    row.value = value
+    db.session.add(row)
+
+
+def team_repo():
+    return get_setting("github_repo", current_app.config.get("GITHUB_REPO_URL", ""))
+
+
+def repo_for(task):
+    return (task.repo_url if task and task.repo_url else team_repo()) or ""
+
+
+def normalize_repo(url):
+    m = REPO_RE.match((url or "").strip())
+    return f"https://github.com/{m.group(1)}/{m.group(2)}" if m else None
+
+
+def pr_number(url):
+    m = PR_RE.match(url or "")
+    return f"#{m.group(3)}" if m else ""
+
+
+def github_merge(pr_url):
+    """Merge a pull request through the GitHub REST API. Returns (ok, message)."""
+    token = current_app.config.get("GITHUB_TOKEN")
+    m = PR_RE.match(pr_url or "")
+    if not token:
+        return False, "GITHUB_TOKEN is not configured; open the pull request on GitHub to merge it."
+    if not m:
+        return False, "This is not a GitHub pull request link."
+    owner, repo, num = m.groups()
+    body = json.dumps({"merge_method": current_app.config.get("GITHUB_MERGE_METHOD", "merge")}).encode()
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{owner}/{repo}/pulls/{num}/merge", data=body, method="PUT",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "nexora-workpulse",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode() or "{}")
+            return bool(data.get("merged", True)), data.get("message", "Pull request merged.")
+    except urllib.error.HTTPError as e:
+        msgs = {401: "GitHub rejected the token. Create a new GITHUB_TOKEN.",
+                403: "The token has no permission to merge in this repository.",
+                404: "Pull request not found, or the token cannot see this repository.",
+                405: "GitHub says this pull request is not mergeable (checks failing, draft, or already merged).",
+                409: "Merge conflict: the branch must be updated before merging.",
+                422: "GitHub could not merge this pull request."}
+        return False, msgs.get(e.code, f"GitHub returned an error ({e.code}).")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False, "Could not reach GitHub. Try again, or merge on GitHub directly."
+
+
 # --------------------------------------------------------------------------- auth
+ONBOARD_FREE = {"web.onboarding", "web.logout", "web.health", "static"}
+
+
 @bp.before_app_request
 def load_user():
     g.user = None
@@ -283,6 +433,10 @@ def load_user():
             g.user = u
         else:
             session.clear()
+    if (g.user and g.user.role == "member" and g.user.onboarded_at is None
+            and request.endpoint not in ONBOARD_FREE and request.method == "GET"):
+        return redirect(url_for("web.onboarding", step=0))
+    return None
 
 
 def login_required(view):
@@ -308,7 +462,6 @@ def role_required(role):
 
 admin_required = role_required("admin")
 member_required = role_required("member")
-PROJECT_ROLES = {"admin", "founder", "connector", "member"}
 
 
 @bp.route("/")
@@ -323,6 +476,35 @@ def health():
         return {"status": "ok"}, 200
     except Exception:  # noqa: BLE001 - never leak details
         return {"status": "database unavailable"}, 503
+
+
+def open_session(user_id):
+    return AttendanceSession.query.filter_by(user_id=user_id, clock_out=None).first()
+
+
+def close_session(s, now):
+    """Close a session. Forgotten (over-long) sessions are capped and flagged. Returns True if capped."""
+    capped = is_stale(s, now)
+    end = s.clock_in + max_session() if capped else now
+    s.incomplete = s.incomplete or capped
+    for b in s.breaks:
+        if b.ended_at is None:
+            b.ended_at = min(end, now)
+    s.clock_out = end
+    return capped
+
+
+def start_attendance(user, now):
+    """Start a work session if none is open. Returns 'started', 'running' or 'restarted'."""
+    s = open_session(user.id)
+    if s and not is_stale(s, now):
+        return "running"
+    state = "started"
+    if s:
+        close_session(s, now)
+        state = "restarted"
+    db.session.add(AttendanceSession(user_id=user.id, clock_in=now))
+    return state
 
 
 @bp.route("/login", methods=["GET", "POST"])
@@ -343,12 +525,19 @@ def login():
                 session.clear()
                 session.permanent = True
                 session["uid"], session["sv"] = user.id, user.session_version
-                user.last_login_at = utcnow()
-                audit("login", "Signed in", user.id)
-                db.session.commit()
+                now = utcnow()
+                user.last_login_at = now
+                if user.role == "member":
+                    user.first_login_at = user.first_login_at or now  # attendance starts from this day
+                    try:
+                        if start_attendance(user, now) != "running":
+                            flash("Signed in. Your work timer has started.", "success")
+                        db.session.commit()
+                    except IntegrityError:
+                        db.session.rollback()
+                else:
+                    db.session.commit()
                 return redirect(url_for("web.dashboard"))
-            audit("login_failed", f"email={email[:100]}")
-            db.session.commit()
             error = "Incorrect email or password, or the account is disabled."
     return render_template("login.html", error=error, email=email)
 
@@ -356,10 +545,13 @@ def login():
 @bp.route("/logout", methods=["POST"])
 @login_required
 def logout():
-    audit("logout", "Signed out")
-    db.session.commit()
+    if g.user.role == "member":
+        s = open_session(g.user.id)
+        if s:
+            close_session(s, utcnow())
+            db.session.commit()
     session.clear()
-    flash("You have been signed out.", "info")
+    flash("You have been signed out. Your work timer is stopped.", "info")
     return redirect(url_for("web.login"))
 
 
@@ -378,22 +570,47 @@ def change_password():
             g.user.password_hash = generate_password_hash(new)
             g.user.session_version += 1
             session["sv"] = g.user.session_version
-            audit("password_changed", "Own password changed")
             db.session.commit()
             flash("Password updated.", "success")
             return redirect(url_for("web.dashboard"))
     return render_template("password.html", error=error, min_length=MIN_PASSWORD)
 
 
+# --------------------------------------------------------------------------- onboarding (members, first sign-in)
+@bp.route("/welcome/<int:step>", methods=["GET", "POST"])
+@member_required
+def onboarding(step):
+    if not 0 <= step <= 4:
+        abort(404)
+    u = g.user
+    if step in (1, 2, 3):
+        area, label, field = SKILL_AREAS[step - 1]
+        if request.method == "POST":
+            level = request.form.get("level", "")
+            if level not in SKILLS:
+                flash("Pick one of the three options to continue.", "error")
+            else:
+                setattr(u, field, level)
+                if step == 3:
+                    u.onboarded_at = u.onboarded_at or utcnow()
+                db.session.commit()
+                return redirect(url_for("web.onboarding", step=step + 1))
+        # do not skip questions: earlier answers must exist
+        for i, (_, _, f) in enumerate(SKILL_AREAS[:step - 1], start=1):
+            if getattr(u, f) is None:
+                return redirect(url_for("web.onboarding", step=i))
+        return render_template("onboarding.html", step=step, area=area, label=label,
+                               current=getattr(u, field), total=3)
+    if step == 4 and u.onboarded_at is None:
+        return redirect(url_for("web.onboarding", step=1))
+    return render_template("onboarding.html", step=step, total=3)
+
+
 # --------------------------------------------------------------------------- dashboards
 @bp.route("/dashboard")
 @login_required
 def dashboard():
-    if g.user.role == "admin":
-        return admin_dashboard()
-    if g.user.role in {"founder", "connector"}:
-        return project_view_dashboard()
-    return member_dashboard()
+    return admin_dashboard() if g.user.role == "admin" else member_dashboard()
 
 
 def member_dashboard():
@@ -401,85 +618,49 @@ def member_dashboard():
     daily = add_carryover([g.user.id], build_daily([g.user.id], today, today, now), today, now)
     day = daily.get((g.user.id, today), empty_day())
     assignments = Assignment.query.join(Task).filter(Assignment.user_id == g.user.id).all()
-    assignments.sort(key=lambda a: (a.status == "completed", a.task.deadline, a.id))
-    ack_today = Acknowledgement.query.filter_by(user_id=g.user.id, ack_date=today).count() > 0
-    hist = build_daily([g.user.id], today - timedelta(days=6), today, now)
-    history = [(d, hist.get((g.user.id, d), empty_day()))
-               for d in (today - timedelta(days=i) for i in range(7))]
+    assignments.sort(key=lambda a: (a.status == "completed", a.status == "submitted", a.task.deadline, a.id))
+    history = daily_records([g.user], today - timedelta(days=6), today, now)
     minutes, tgt = day["minutes"], target_minutes()
+    updated_today = {u.assignment_id for u in TaskUpdate.query.filter_by(user_id=g.user.id, update_date=today)}
     return render_template(
-        "member_dashboard.html", day=day, status=attendance_status(day), minutes=minutes,
-        target=tgt, remaining=max(tgt - minutes, 0), pct=min(100, int(minutes * 100 / tgt)),
+        "member_dashboard.html", day=day, state=day_state(day, minutes >= tgt), minutes=minutes,
+        target=tgt, remaining=max(tgt - minutes, 0), pct=min(100, int(minutes * 100 / tgt)) if tgt else 100,
         assignments=assignments, overdue=[a for a in assignments if is_overdue(a)],
-        ack_today=ack_today, history=history, values={}, errors=[], live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip(),
-        project_stages=ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all(),
-        approved_project_updates=ProjectUpdate.query.filter_by(status="approved").order_by(ProjectUpdate.reviewed_at.desc()).limit(10).all(),
-        member_project_files=ProjectFile.query.filter_by(submitted_by=g.user.id).order_by(ProjectFile.uploaded_at.desc()).limit(30).all(),
-        project_notices=ProjectNotice.query.order_by(ProjectNotice.created_at.desc()).limit(30).all(),
-        acknowledged_notice_ids={r[0] for r in db.session.query(ProjectNoticeAcknowledgement.notice_id).filter_by(user_id=g.user.id).all()})
+        updated_today=updated_today, history=history, repo=team_repo(), today=today)
 
-
-def project_view_dashboard():
-    _ensure_project_stages()
-    stages = ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all()
-    updates = ProjectUpdate.query.filter_by(status="approved").order_by(ProjectUpdate.reviewed_at.desc()).limit(30).all()
-    files = ProjectFile.query.filter_by(status="approved").order_by(ProjectFile.uploaded_at.desc()).limit(30).all()
-    agreement = ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first()
-    confirmations = AgreementConfirmation.query.filter_by(agreement_id=agreement.id).all() if agreement else []
-    return render_template("project_dashboard.html", stages=stages, updates=updates, files=files,
-                           agreement=agreement, confirmations=confirmations, live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip())
 
 def admin_dashboard():
     now, today = utcnow(), local_today()
     members = User.query.filter_by(role="member", is_active=True).order_by(User.name).all()
-    ids = [m.id for m in members]
-    daily = add_carryover(ids, build_daily(ids, today, today, now), today, now)
-    by_user = {}
-    for a in Assignment.query.filter(Assignment.user_id.in_(ids)).all():
-        by_user.setdefault(a.user_id, []).append(a)
-    acked = {r[0] for r in db.session.query(Acknowledgement.user_id)
-             .filter(Acknowledgement.ack_date == today).all()}
-    rows = []
-    for m in members:
-        d = daily.get((m.id, today), empty_day())
-        mine = by_user.get(m.id, [])
-        open_a = [a for a in mine if a.status != "completed"]
-        rows.append(dict(user=m, day=d, status=attendance_status(d), tasks=len(mine), open=len(open_a),
-                         progress=(sum(a.progress for a in open_a) // len(open_a)) if open_a else None,
-                         acked=m.id in acked, met=d["minutes"] >= target_minutes(),
-                         overdue=sum(1 for a in open_a if is_overdue(a))))
-    stats = dict(
-        members=len(members), clocked_in=sum(1 for r in rows if r["day"]["active"]),
-        tasks=Task.query.count(),
-        review=Assignment.query.filter_by(status="submitted").count(),
-        met=sum(1 for r in rows if r["met"]))
-    return render_template("admin_dashboard.html", rows=rows, stats=stats, target=target_minutes(), today=today,
-                           project_stages=ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all(),
-                           project_updates=ProjectUpdate.query.order_by(ProjectUpdate.created_at.desc()).limit(15).all(),
-                           project_files=ProjectFile.query.order_by(ProjectFile.uploaded_at.desc()).limit(15).all(),
-                           agreement=ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first(),
-                           live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip())
+    rows = daily_records(members, today, today, now)
+    seen = {r["user"].id for r in rows}
+    waiting = [m for m in members if m.id not in seen]  # never signed in yet
+    prs = (Assignment.query.filter(Assignment.pr_url.isnot(None), Assignment.pr_merged_at.is_(None))
+           .order_by(Assignment.updated_at.desc()).all())
+    review = Assignment.query.filter_by(status="submitted").order_by(Assignment.submitted_at.desc()).all()
+    stats = dict(members=len(members), working=sum(1 for r in rows if r["state"] in ("working", "paused")),
+                 reached=sum(1 for r in rows if r["met"]), absent=sum(1 for r in rows if r["state"] == "absent"),
+                 prs=len(prs), review=len(review))
+    return render_template("admin_dashboard.html", rows=rows, waiting=waiting, stats=stats, prs=prs,
+                           review=review, target=target_minutes(), today=today, repo=team_repo())
 
 
 # --------------------------------------------------------------------------- attendance (members)
-def open_session(user_id):
-    return AttendanceSession.query.filter_by(user_id=user_id, clock_out=None).first()
-
-
 @bp.route("/clock-in", methods=["POST"])
 @member_required
 def clock_in():
-    if open_session(g.user.id):
-        flash("You already have an active session. Clock out first.", "warning")
+    s = open_session(g.user.id)
+    if s and not is_stale(s, utcnow()):
+        flash("Your work timer is already running.", "warning")
     else:
         try:
-            db.session.add(AttendanceSession(user_id=g.user.id, clock_in=utcnow()))
-            audit("clock_in", "Clocked in")
+            g.user.first_login_at = g.user.first_login_at or utcnow()
+            start_attendance(g.user, utcnow())
             db.session.commit()
-            flash("Clocked in. Your session is now being recorded.", "success")
+            flash("Work timer started.", "success")
         except IntegrityError:
             db.session.rollback()
-            flash("You already have an active session.", "warning")
+            flash("Your work timer is already running.", "warning")
     return redirect(url_for("web.dashboard"))
 
 
@@ -488,21 +669,12 @@ def clock_in():
 def clock_out():
     s, now = open_session(g.user.id), utcnow()
     if not s:
-        flash("You have no active session.", "warning")
+        flash("Your work timer is not running.", "warning")
         return redirect(url_for("web.dashboard"))
-    if is_stale(s, now):  # forgotten session: cap at the maximum and flag it
-        end, s.incomplete = s.clock_in + max_session(), True
-        flash("Your previous session ran past the maximum length and was capped and flagged as incomplete.",
-              "warning")
-    else:
-        end = now
-    for b in s.breaks:
-        if b.ended_at is None:
-            b.ended_at = min(end, now)
-    s.clock_out = end
-    audit("clock_out", f"Recorded {session_minutes(s, now):.0f} minutes")
+    if close_session(s, now):
+        flash("Your previous session ran past the maximum length and was capped and flagged as incomplete.", "warning")
     db.session.commit()
-    flash("Clocked out. Session saved.", "success")
+    flash("Work timer stopped. Today's hours are saved.", "success")
     return redirect(url_for("web.dashboard"))
 
 
@@ -511,14 +683,13 @@ def clock_out():
 def break_start():
     s = open_session(g.user.id)
     if not s:
-        flash("Clock in before starting a break.", "warning")
+        flash("Start your work timer before pausing.", "warning")
     elif any(b.ended_at is None for b in s.breaks):
-        flash("A break is already in progress.", "warning")
+        flash("Your timer is already paused.", "warning")
     else:
         db.session.add(BreakRecord(session_id=s.id, started_at=utcnow()))
-        audit("break_start", "Break started")
         db.session.commit()
-        flash("Break started. Break time is not counted toward your target.", "info")
+        flash("Timer paused. Paused time does not count toward your target.", "info")
     return redirect(url_for("web.dashboard"))
 
 
@@ -528,97 +699,122 @@ def break_end():
     s = open_session(g.user.id)
     b = next((b for b in (s.breaks if s else []) if b.ended_at is None), None)
     if not b:
-        flash("No break is in progress.", "warning")
+        flash("Your timer is not paused.", "warning")
     else:
         b.ended_at = utcnow()
-        audit("break_end", "Break ended")
         db.session.commit()
-        flash("Welcome back. Break ended.", "success")
+        flash("Welcome back. Timer resumed.", "success")
     return redirect(url_for("web.dashboard"))
 
 
 @bp.route("/attendance")
 @member_required
 def attendance_history():
-    now, today = utcnow(), local_today()
-    start = today - timedelta(days=29)
-    daily = build_daily([g.user.id], start, today, now)
-    days = [(d, daily[(g.user.id, d)]) for d in (today - timedelta(days=i) for i in range(30))
-            if (g.user.id, d) in daily]
-    return render_template("attendance.html", days=days, target=target_minutes())
+    today = local_today()
+    rows = daily_records([g.user], today - timedelta(days=29), today)
+    return render_template("attendance.html", rows=rows, target=target_minutes(),
+                           reached=sum(1 for r in rows if r["met"]),
+                           total=sum(r["minutes"] for r in rows))
 
 
 # --------------------------------------------------------------------------- member tasks
-@bp.route("/my-tasks/<int:aid>", methods=["GET", "POST"])
-@member_required
-def my_task(aid):
+def my_assignment(aid):
     a = db.session.get(Assignment, aid)
     if a is None or a.user_id != g.user.id:
         abort(404)
-    errors = []
-    locked = a.status in ("submitted", "completed")
-    if request.method == "POST":
-        if locked:
-            abort(403)
-        notes, url = clean(request.form.get("work_notes"), 5000), clean(request.form.get("deliverable_url"), 500)
-        try:
-            progress = int(request.form.get("progress", ""))
-            if not 0 <= progress <= 100:
-                raise ValueError
-        except ValueError:
-            progress = None
-            errors.append("Progress must be a whole number from 0 to 100.")
-        if url and not valid_url(url):
-            errors.append("Deliverable link must be a valid http:// or https:// URL.")
-        submit = request.form.get("action") == "submit"
-        if submit and not (notes or url):
-            errors.append("Add work notes or a deliverable link before submitting for review.")
-        if not errors:
-            a.progress, a.work_notes, a.deliverable_url = progress, notes, url or None
-            if submit:
-                a.status, a.submitted_at = "submitted", utcnow()
-                audit("task_submitted", f"assignment={a.id} task={a.task_id}")
-                flash("Submitted for review.", "success")
-            else:
-                if a.status in ("not_started", "needs_changes") and (progress > 0 or notes):
-                    a.status = "in_progress"
-                audit("task_progress", f"assignment={a.id} progress={progress}")
-                flash("Progress saved.", "success")
-            db.session.commit()
-            return redirect(url_for("web.my_task", aid=a.id))
-    return render_template("my_task.html", a=a, errors=errors, locked=locked, form=request.form)
+    return a
 
 
-@bp.route("/acknowledgement", methods=["POST"])
+def render_my_task(a, errors=None, form=None, status=200):
+    return render_template("my_task.html", a=a, errors=errors or [], form=form or {},
+                           locked=a.status in ("submitted", "completed"), repo=repo_for(a.task),
+                           stage=stage_index(a)), status
+
+
+@bp.route("/my-tasks/<int:aid>")
 @member_required
-def submit_ack():
-    f = request.form
-    v = {k: clean(f.get(k), n) for k, n in (("tasks_worked", 3000), ("work_completed", 5000),
-                                            ("deliverable_links", 2000), ("problems", 3000),
-                                            ("pending_work", 3000), ("next_steps", 3000))}
-    errors = []
-    if not v["tasks_worked"]:
-        errors.append("List the tasks you worked on.")
-    if not v["work_completed"]:
-        errors.append("Describe the work you completed.")
-    for line in filter(None, (x.strip() for x in v["deliverable_links"].splitlines())):
-        if not valid_url(line):
-            errors.append("Each deliverable link must be a full http:// or https:// URL, one per line.")
-            break
+def my_task(aid):
+    return render_my_task(my_assignment(aid))
+
+
+def store_link(a, link):
+    if PR_RE.match(link):
+        if a.pr_url != link:
+            a.pr_url, a.pr_merged_at = link, None
+    else:
+        a.deliverable_url = link
+
+
+@bp.route("/my-tasks/<int:aid>/update", methods=["POST"])
+@member_required
+def task_update(aid):
+    """Daily progress update: what was done today, progress %, optional pull request / work link."""
+    a = my_assignment(aid)
+    if a.status in ("submitted", "completed"):
+        abort(403)
+    f, errors = request.form, []
+    note, link = clean(f.get("note"), 5000), clean(f.get("link"), 500)
+    try:
+        progress = int(f.get("progress", ""))
+        if not 0 <= progress <= 100:
+            raise ValueError
+    except ValueError:
+        progress = None
+        errors.append("Progress must be a whole number from 0 to 100.")
+    if not note:
+        errors.append("Write what you worked on today.")
+    if link and not valid_url(link):
+        errors.append("The link must be a valid http:// or https:// URL (for code, paste your GitHub pull request).")
     if errors:
-        return render_template("ack_form_page.html", values=v, errors=errors), 400
-    db.session.add(Acknowledgement(user_id=g.user.id, ack_date=local_today(), **v))
-    audit("acknowledgement", "Daily acknowledgement submitted")
+        return render_my_task(a, errors, f, 400)
+    if link:
+        store_link(a, link)
+    a.progress = progress
+    if a.status in ("not_started", "needs_changes"):
+        a.status = "in_progress"
+    db.session.add(TaskUpdate(assignment_id=a.id, user_id=g.user.id, update_date=local_today(),
+                              progress=progress, note=note, pr_url=link or None))
     db.session.commit()
-    flash("Daily work acknowledgement recorded.", "success")
-    return redirect(url_for("web.dashboard"))
+    flash("Today's progress is saved.", "success")
+    return redirect(url_for("web.my_task", aid=a.id))
+
+
+@bp.route("/my-tasks/<int:aid>/complete", methods=["POST"])
+@member_required
+def task_complete(aid):
+    """Task completion acknowledgement: the member confirms the task is finished and sends it for review."""
+    a = my_assignment(aid)
+    if a.status in ("submitted", "completed"):
+        abort(403)
+    f, errors = request.form, []
+    summary, link = clean(f.get("summary"), 5000), clean(f.get("link"), 500)
+    if f.get("confirm") != "1":
+        errors.append("Tick the box to confirm the task is complete.")
+    if not summary:
+        errors.append("Add a short completion summary.")
+    if link and not valid_url(link):
+        errors.append("The link must be a valid http:// or https:// URL.")
+    if not (link or a.pr_url or a.deliverable_url):
+        errors.append("Add your pull request link (or a deliverable link) before marking the task complete.")
+    if errors:
+        return render_my_task(a, errors, f, 400)
+    if link:
+        store_link(a, link)
+    a.work_notes, a.progress, a.status, a.submitted_at = summary, 100, "submitted", utcnow()
+    db.session.add(TaskUpdate(assignment_id=a.id, user_id=g.user.id, update_date=local_today(), progress=100,
+                              note="Marked complete: " + summary, pr_url=link or None))
+    db.session.commit()
+    flash("Task marked complete. Your admin will review and merge it.", "success")
+    return redirect(url_for("web.my_task", aid=a.id))
 
 
 # --------------------------------------------------------------------------- admin: users
 @bp.route("/admin/users")
 @admin_required
 def users():
-    return render_template("users.html", users=User.query.order_by(User.role, User.name).all())
+    people = User.query.order_by(User.role, User.name).all()
+    counts = open_task_counts([u.id for u in people])
+    return render_template("users.html", users=people, counts=counts)
 
 
 @bp.route("/admin/users/new", methods=["GET", "POST"])
@@ -627,9 +823,6 @@ def user_new():
     errors, v = [], {"name": "", "email": ""}
     if request.method == "POST":
         v = {"name": clean(request.form.get("name"), 80), "email": clean(request.form.get("email"), 254).lower()}
-        role = clean(request.form.get("role"), 10).lower()
-        if role not in {"member", "founder", "connector"}:
-            role = "member"
         pw, confirm = request.form.get("password", ""), request.form.get("confirm_password", "")
         if len(v["name"]) < 2:
             errors.append("Name must be at least 2 characters.")
@@ -642,42 +835,16 @@ def user_new():
             errors.append(err)
         if not errors:
             try:
-                u = User(name=v["name"], email=v["email"], role=role, password_hash=generate_password_hash(pw))
+                u = User(name=v["name"], email=v["email"], role="member", password_hash=generate_password_hash(pw))
                 db.session.add(u)
-                db.session.flush()
-                audit("user_created", f"user={u.id} email={u.email}")
                 db.session.commit()
-                flash(f"Account created for {u.name}. Share the password securely.", "success")
+                flash(f"Account created for {u.name}. Attendance starts the day they first sign in.", "success")
                 return redirect(url_for("web.users"))
             except IntegrityError:
                 db.session.rollback()
                 errors.append("An account with this email already exists.")
     return render_template("user_form.html", errors=errors, v=v, min_length=MIN_PASSWORD)
 
-
-@bp.route("/admin/users/<int:uid>/edit", methods=["GET", "POST"])
-@admin_required
-def user_edit(uid):
-    user = db.session.get(User, uid) or abort(404)
-    if user.role == "admin":
-        abort(403)
-    errors = []
-    if request.method == "POST":
-        name = clean(request.form.get("name"), 80)
-        email = clean(request.form.get("email"), 254).lower()
-        role = clean(request.form.get("role"), 10).lower()
-        other = User.query.filter(User.email == email, User.id != user.id).first()
-        if len(name) < 2: errors.append("Name must be at least 2 characters.")
-        if not EMAIL_RE.match(email): errors.append("Enter a valid email address.")
-        elif other: errors.append("That email address is already in use.")
-        if role not in {"member", "founder", "connector"}: errors.append("Choose a valid non-admin role.")
-        if not errors:
-            user.name, user.email, user.role = name, email, role
-            user.session_version += 1
-            audit("user_updated", f"user={user.id}; role={role}", g.user.id)
-            db.session.commit(); flash("Account updated. The user must sign in again.", "success")
-            return redirect(url_for("web.users"))
-    return render_template("user_edit.html", account=user, errors=errors)
 
 @bp.route("/admin/users/<int:uid>/toggle", methods=["POST"])
 @admin_required
@@ -688,7 +855,6 @@ def user_toggle(uid):
     else:
         u.is_active = not u.is_active
         u.session_version += 1  # signs the user out immediately
-        audit("user_enabled" if u.is_active else "user_disabled", f"user={u.id}")
         db.session.commit()
         flash(f"{u.name} is now {'active' if u.is_active else 'disabled'}.", "success")
     return redirect(url_for("web.users"))
@@ -705,18 +871,103 @@ def user_reset(uid):
     else:
         u.password_hash = generate_password_hash(pw)
         u.session_version += 1
-        audit("password_reset", f"user={u.id}")
         db.session.commit()
         flash(f"Password reset for {u.name}.", "success")
     return redirect(url_for("web.users"))
+
+
+def member_footprint(u):
+    return dict(sessions=AttendanceSession.query.filter_by(user_id=u.id).count(),
+                tasks=Assignment.query.filter_by(user_id=u.id).count(),
+                updates=TaskUpdate.query.filter_by(user_id=u.id).count())
+
+
+def delete_member(u):
+    """Permanently remove a member and everything recorded for them."""
+    sids = [s.id for s in AttendanceSession.query.with_entities(AttendanceSession.id).filter_by(user_id=u.id)]
+    aids = [a.id for a in Assignment.query.with_entities(Assignment.id).filter_by(user_id=u.id)]
+    if sids:
+        BreakRecord.query.filter(BreakRecord.session_id.in_(sids)).delete(synchronize_session=False)
+    AttendanceSession.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    TaskUpdate.query.filter(TaskUpdate.user_id == u.id).delete(synchronize_session=False)
+    if aids:
+        TaskUpdate.query.filter(TaskUpdate.assignment_id.in_(aids)).delete(synchronize_session=False)
+        AssignmentReview.query.filter(AssignmentReview.assignment_id.in_(aids)).delete(synchronize_session=False)
+    Assignment.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    Acknowledgement.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    AuditLog.query.filter_by(user_id=u.id).delete(synchronize_session=False)
+    db.session.delete(u)
+
+
+@bp.route("/admin/users/<int:uid>/delete", methods=["GET", "POST"])
+@admin_required
+def user_delete(uid):
+    u = db.session.get(User, uid) or abort(404)
+    if u.role != "member":
+        flash("Administrator accounts cannot be deleted here.", "warning")
+        return redirect(url_for("web.users"))
+    if request.method == "POST":
+        if request.form.get("confirm_email", "").strip().lower() != u.email:
+            flash("Type the member's email exactly to confirm.", "error")
+            return render_template("user_delete.html", u=u, fp=member_footprint(u)), 400
+        name = u.name
+        delete_member(u)
+        db.session.commit()
+        flash(f"{name} and all of their records were deleted.", "success")
+        return redirect(url_for("web.users"))
+    return render_template("user_delete.html", u=u, fp=member_footprint(u))
+
+
+# --------------------------------------------------------------------------- admin: settings & data wipe
+@bp.route("/admin/settings", methods=["GET", "POST"])
+@admin_required
+def settings():
+    error = None
+    if request.method == "POST":
+        raw = clean(request.form.get("github_repo"), 300)
+        repo = normalize_repo(raw) if raw else ""
+        if raw and not repo:
+            error = "Enter the repository as https://github.com/owner/repository"
+        else:
+            set_setting("github_repo", repo)
+            db.session.commit()
+            flash("GitHub repository saved. Members now see it on their dashboard.", "success")
+            return redirect(url_for("web.settings"))
+    return render_template("settings.html", repo=team_repo(), error=error,
+                           token=bool(current_app.config.get("GITHUB_TOKEN")))
+
+
+def wipe_all_data():
+    """Delete all WorkPulse records. Keeps administrator accounts (so you can sign in) and settings."""
+    for model in (TaskUpdate, AssignmentReview, Assignment, Task, BreakRecord, AttendanceSession,
+                  Acknowledgement, AuditLog):
+        model.query.delete(synchronize_session=False)
+    User.query.filter(User.role != "admin").delete(synchronize_session=False)
+    User.query.update({User.first_login_at: None}, synchronize_session=False)
+
+
+@bp.route("/admin/reset", methods=["GET", "POST"])
+@admin_required
+def reset_data():
+    counts = dict(members=User.query.filter_by(role="member").count(), tasks=Task.query.count(),
+                  sessions=AttendanceSession.query.count(), updates=TaskUpdate.query.count())
+    if request.method == "POST":
+        if request.form.get("phrase", "").strip() != WIPE_PHRASE:
+            flash(f"Type {WIPE_PHRASE} exactly to confirm.", "error")
+            return render_template("reset.html", counts=counts, phrase=WIPE_PHRASE), 400
+        wipe_all_data()
+        db.session.commit()
+        flash("All WorkPulse data was deleted. Administrator accounts and settings were kept.", "success")
+        return redirect(url_for("web.dashboard"))
+    return render_template("reset.html", counts=counts, phrase=WIPE_PHRASE)
 
 
 # --------------------------------------------------------------------------- admin: tasks
 def parse_task_form(form, members):
     v = {k: clean(form.get(k), n) for k, n in (("title", 150), ("description", 5000),
                                                ("expected_deliverable", 1000), ("instructions", 3000),
-                                               ("priority", 10), ("target_hours", 10),
-                                               ("start_date", 10), ("deadline", 10))}
+                                               ("priority", 10), ("target_hours", 10), ("work_type", 12),
+                                               ("repo_url", 300), ("start_date", 10), ("deadline", 10))}
     errors = []
     if len(v["title"]) < 3:
         errors.append("Task title must be at least 3 characters.")
@@ -724,6 +975,14 @@ def parse_task_form(form, members):
         errors.append("A detailed description is required.")
     if v["priority"] not in PRIORITIES:
         errors.append("Choose a valid priority.")
+    if v["work_type"] and v["work_type"] not in WORK_TYPES:
+        errors.append("Choose a valid work type.")
+    if v["repo_url"]:
+        repo = normalize_repo(v["repo_url"])
+        if not repo:
+            errors.append("Repository must look like https://github.com/owner/repository")
+        else:
+            v["repo_url"] = repo
     try:
         hours = float(v["target_hours"])
         if not 0 < hours <= 200:
@@ -748,6 +1007,14 @@ def apply_task_fields(task, v, hours, sd, dl):
     task.title, task.description, task.priority = v["title"], v["description"], v["priority"]
     task.target_hours, task.start_date, task.deadline = hours, sd, dl
     task.expected_deliverable, task.instructions = v["expected_deliverable"] or None, v["instructions"] or None
+    task.work_type, task.repo_url = v["work_type"] or None, v["repo_url"] or None
+
+
+def task_form_page(task, members, v, selected, all_team, errors, status=200):
+    counts = open_task_counts([m.id for m in members])
+    return render_template("task_form.html", task=task, members=members, v=v, selected=selected,
+                           all_team=all_team, errors=errors, counts=counts,
+                           suggest=suggestions(members, counts), repo=team_repo()), status
 
 
 @bp.route("/admin/tasks")
@@ -771,12 +1038,10 @@ def task_new():
             db.session.flush()
             for uid in selected:
                 db.session.add(Assignment(task_id=t.id, user_id=uid))
-            audit("task_created", f"task={t.id} assignees={len(selected)}")
             db.session.commit()
             flash(f"Task posted to {len(selected)} team member(s).", "success")
             return redirect(url_for("web.task_detail", tid=t.id))
-    return render_template("task_form.html", task=None, members=members, v=v, selected=selected,
-                           all_team=all_team, errors=errors)
+    return task_form_page(None, members, v, selected, all_team, errors)
 
 
 @bp.route("/admin/tasks/<int:tid>/edit", methods=["GET", "POST"])
@@ -787,8 +1052,9 @@ def task_edit(tid):
     existing = {a.user_id: a for a in t.assignments}
     errors, selected, all_team = [], set(existing), False
     v = dict(title=t.title, description=t.description, priority=t.priority, target_hours=t.target_hours,
-             start_date=t.start_date.isoformat(), deadline=t.deadline.isoformat(),
-             expected_deliverable=t.expected_deliverable or "", instructions=t.instructions or "")
+             start_date=t.start_date.isoformat(), deadline=t.deadline.isoformat(), work_type=t.work_type or "",
+             repo_url=t.repo_url or "", expected_deliverable=t.expected_deliverable or "",
+             instructions=t.instructions or "")
     if request.method == "POST":
         v, hours, sd, dl, selected, all_team, errors = parse_task_form(request.form, members)
         if not errors:
@@ -802,13 +1068,11 @@ def task_edit(tid):
                         db.session.delete(a)
                     else:
                         kept += 1
-            audit("task_edited", f"task={t.id} assignees={len(selected)}")
             db.session.commit()
             flash("Task updated." + (f" {kept} member(s) with work in progress kept on the task." if kept else ""),
                   "success")
             return redirect(url_for("web.task_detail", tid=t.id))
-    return render_template("task_form.html", task=t, members=members, v=v, selected=selected,
-                           all_team=all_team, errors=errors)
+    return task_form_page(t, members, v, selected, all_team, errors)
 
 
 @bp.route("/admin/tasks/<int:tid>")
@@ -816,7 +1080,24 @@ def task_edit(tid):
 def task_detail(tid):
     t = db.session.get(Task, tid) or abort(404)
     assignments = sorted(t.assignments, key=lambda a: a.user.name.lower())
-    return render_template("task_detail.html", task=t, assignments=assignments)
+    return render_template("task_detail.html", task=t, assignments=assignments, repo=repo_for(t),
+                           token=bool(current_app.config.get("GITHUB_TOKEN")))
+
+
+@bp.route("/admin/tasks/<int:tid>/delete", methods=["POST"])
+@admin_required
+def task_delete(tid):
+    t = db.session.get(Task, tid) or abort(404)
+    if request.form.get("confirm") != "1":
+        flash("Tick the confirmation box to delete this task.", "error")
+        return redirect(url_for("web.task_detail", tid=t.id))
+    aids = [a.id for a in t.assignments]
+    if aids:
+        TaskUpdate.query.filter(TaskUpdate.assignment_id.in_(aids)).delete(synchronize_session=False)
+    db.session.delete(t)
+    db.session.commit()
+    flash("Task deleted.", "success")
+    return redirect(url_for("web.tasks"))
 
 
 @bp.route("/admin/assignments/<int:aid>/review", methods=["POST"])
@@ -825,7 +1106,7 @@ def review(aid):
     a = db.session.get(Assignment, aid) or abort(404)
     decision, feedback = request.form.get("decision"), clean(request.form.get("feedback"), 3000)
     if a.status != "submitted":
-        flash("Only submitted work can be reviewed.", "warning")
+        flash("Only completed work can be reviewed.", "warning")
     elif decision not in ("approved", "changes"):
         flash("Choose approve or request changes.", "error")
     elif decision == "changes" and not feedback:
@@ -837,120 +1118,107 @@ def review(aid):
             a.status = "needs_changes"
         db.session.add(AssignmentReview(assignment_id=a.id, reviewer_id=g.user.id, decision=decision,
                                         feedback=feedback or None))
-        audit("task_reviewed", f"assignment={a.id} decision={decision}")
         db.session.commit()
         flash("Work approved." if decision == "approved" else "Changes requested.", "success")
-    return redirect(url_for("web.task_detail", tid=a.task_id))
+    return redirect(request.form.get("next") if request.form.get("next") == url_for("web.dashboard")
+                    else url_for("web.task_detail", tid=a.task_id))
 
 
-# --------------------------------------------------------------------------- admin: acknowledgements, audit
-@bp.route("/admin/acknowledgements")
+@bp.route("/admin/assignments/<int:aid>/merge", methods=["POST"])
 @admin_required
-def acknowledgements():
-    q = Acknowledgement.query.join(User)
-    uid, d1, d2 = request.args.get("user_id", ""), parse_date(request.args.get("start")), parse_date(request.args.get("end"))
-    if uid.isdigit():
-        q = q.filter(Acknowledgement.user_id == int(uid))
-    if d1:
-        q = q.filter(Acknowledgement.ack_date >= d1)
-    if d2:
-        q = q.filter(Acknowledgement.ack_date <= d2)
-    items = q.order_by(Acknowledgement.created_at.desc()).limit(200).all()
-    members = User.query.filter_by(role="member").order_by(User.name).all()
-    return render_template("acknowledgements.html", items=items, members=members, f=request.args)
+def merge_pr(aid):
+    a = db.session.get(Assignment, aid) or abort(404)
+    back = (url_for("web.dashboard") if request.form.get("next") == url_for("web.dashboard")
+            else url_for("web.task_detail", tid=a.task_id))
+    if not a.pr_url:
+        flash("No pull request is linked to this task.", "warning")
+        return redirect(back)
+    if request.form.get("mark_only") == "1":
+        a.pr_merged_at = utcnow()
+        db.session.commit()
+        flash("Pull request marked as merged.", "success")
+        return redirect(back)
+    ok, msg = github_merge(a.pr_url)
+    if ok:
+        a.pr_merged_at = utcnow()
+        if request.form.get("approve") == "1" and a.status == "submitted":
+            a.status, a.completed_at, a.progress = "completed", utcnow(), 100
+            db.session.add(AssignmentReview(assignment_id=a.id, reviewer_id=g.user.id, decision="approved",
+                                            feedback="Merged on GitHub."))
+        db.session.commit()
+        flash(f"Merged {pr_number(a.pr_url)} on GitHub. {msg}", "success")
+    else:
+        flash(msg, "error")
+    return redirect(back)
 
 
-@bp.route("/admin/audit")
-@admin_required
-def audit_log():
-    items = AuditLog.query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(200).all()
-    return render_template("audit.html", items=items)
-
-
-# --------------------------------------------------------------------------- admin: reports
-def report_data(args):
+# --------------------------------------------------------------------------- admin: daily records
+def records_range(args):
     today = local_today()
     rng, errors = args.get("range", "week"), []
     if rng == "today":
         start, end = today, today
+    elif rng == "yesterday":
+        start = end = today - timedelta(days=1)
     elif rng == "month":
         start, end = today.replace(day=1), today
     elif rng == "custom":
         start, end = parse_date(args.get("start")), parse_date(args.get("end"))
         if not start or not end:
             errors.append("Enter both a start and an end date.")
-            start, end = today - timedelta(days=today.weekday()), today
+            rng, start, end = "week", today - timedelta(days=today.weekday()), today
         elif end < start or (end - start).days > 92:
             errors.append("End date must not precede the start date, and the range is limited to 93 days.")
-            start, end = today - timedelta(days=today.weekday()), today
+            rng, start, end = "week", today - timedelta(days=today.weekday()), today
     else:
         rng, start, end = "week", today - timedelta(days=today.weekday()), today
+    return rng, start, end, errors
+
+
+def report_data(args):
+    rng, start, end, errors = records_range(args)
     members = User.query.filter_by(role="member").order_by(User.name).all()
     uid = args.get("user_id", "")
     chosen = [m for m in members if uid.isdigit() and m.id == int(uid)] or members
-    ids = [m.id for m in chosen]
-    daily = build_daily(ids, start, end)
-    counts = {}
-    for u, st, n in (db.session.query(Assignment.user_id, Assignment.status, func.count())
-                     .join(Task).filter(Task.start_date <= end, Task.deadline >= start,
-                                        Assignment.user_id.in_(ids))
-                     .group_by(Assignment.user_id, Assignment.status).all()):
-        counts.setdefault(u, {})[st] = n
-    ack_days = {}
-    for u, d in (db.session.query(Acknowledgement.user_id, Acknowledgement.ack_date)
-                 .filter(Acknowledgement.ack_date >= start, Acknowledgement.ack_date <= end,
-                         Acknowledgement.user_id.in_(ids)).distinct().all()):
-        ack_days.setdefault(u, set()).add(d)
+    rows = daily_records(chosen, start, end)
     tgt = target_minutes()
-    summary, detail = [], []
+    summary = []
     for m in chosen:
-        c = counts.get(m.id, {})
-        mine = {d: v for (u, d), v in daily.items() if u == m.id}
-        summary.append(dict(
-            user=m, days=len(mine), minutes=sum(v["minutes"] for v in mine.values()),
-            met=sum(1 for v in mine.values() if v["minutes"] >= tgt),
-            assigned=sum(c.values()), submitted=c.get("submitted", 0), completed=c.get("completed", 0),
-            pending=c.get("not_started", 0) + c.get("in_progress", 0) + c.get("needs_changes", 0),
-            acks=len(ack_days.get(m.id, ()))))
-        for d in sorted(mine, reverse=True):
-            v = mine[d]
-            detail.append(dict(date=d, user=m, day=v, met=v["minutes"] >= tgt,
-                               acked=d in ack_days.get(m.id, ())))
-    detail.sort(key=lambda r: (r["date"], r["user"].name), reverse=True)
-    return dict(rng=rng, start=start, end=end, members=members, uid=uid, summary=summary,
-                detail=detail, errors=errors, target=tgt)
+        mine = [r for r in rows if r["user"].id == m.id]
+        if not mine:
+            continue
+        present = [r for r in mine if r["state"] != "absent"]
+        summary.append(dict(user=m, days=len(mine), present=len(present), minutes=sum(r["minutes"] for r in mine),
+                            met=sum(1 for r in mine if r["met"]), absent=len(mine) - len(present),
+                            rate=int(sum(1 for r in mine if r["met"]) * 100 / len(mine))))
+    return dict(rng=rng, start=start, end=end, members=members, uid=uid, rows=rows, summary=summary,
+                errors=errors, target=tgt)
 
 
-@bp.route("/admin/reports")
+@bp.route("/admin/records")
 @admin_required
 def reports():
     return render_template("reports.html", **report_data(request.args))
 
 
-@bp.route("/admin/reports/export.csv")
+@bp.route("/admin/records/export.csv")
 @admin_required
 def reports_export():
     data = report_data(request.args)
-    by_user = {s["user"].id: s for s in data["summary"]}
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Date", "Employee", "Email", "First login", "Last logout", "Recorded minutes", "Recorded duration",
-                "Target achieved", "Incomplete session", "Acknowledgement submitted", "Assigned tasks (period)",
-                "Submitted", "Completed", "Pending"])
-    for r in data["detail"]:
-        s, d = by_user[r["user"].id], r["day"]
-        mins = int(round(d["minutes"]))
+    w.writerow(["Date", "Member", "Email", "Logged in", "Logged out", "Hours worked", "Minutes",
+                "Target reached", "Status", "Work updates"])
+    for r in data["rows"]:
+        d, mins = r["day"], int(round(r["minutes"]))
+        work = " | ".join(f"{u.assignment.task.title} ({u.progress}%): {u.note}" for u in r["updates"])
         w.writerow([csv_safe(x) for x in [
             r["date"].isoformat(), r["user"].name, r["user"].email,
             to_local(d["first_in"]).strftime("%H:%M") if d["first_in"] else "",
             to_local(d["last_out"]).strftime("%H:%M") if d["last_out"] else ("Active" if d["active"] else ""),
-            mins, f"{mins // 60}h {mins % 60:02d}m", "Yes" if r["met"] else "No",
-            "Yes" if d["incomplete"] else "No", "Yes" if r["acked"] else "No",
-            s["assigned"], s["submitted"], s["completed"], s["pending"]]])
-    audit("report_exported", f"{data['start']}..{data['end']}")
-    db.session.commit()
-    name = f"workpulse_report_{data['start']}_{data['end']}.csv"
-    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
+            f"{mins // 60}h {mins % 60:02d}m", mins, "Yes" if r["met"] else "No", r["label"], work]])
+    name = f"workpulse_daily_records_{data['start']}_{data['end']}.csv"
+    return Response("﻿" + buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
@@ -973,8 +1241,26 @@ def register_filters(app):
     def ldate(d):
         return d.strftime("%a, %d %b %Y") if d else "—"
 
-    app.jinja_env.globals.update(STATUS=STATUS, PRIORITIES=PRIORITIES, is_overdue=is_overdue,
-                                 session_mins=lambda s: session_minutes(s, utcnow()))
+    @app.template_filter("initials")
+    def initials(name):
+        parts = [p for p in (name or "?").split() if p]
+        return ((parts[0][0] + (parts[1][0] if len(parts) > 1 else "")) if parts else "?").upper()
+
+    @app.template_filter("hue")
+    def hue(value):
+        return (sum(ord(c) for c in str(value)) * 47) % 360
+
+    app.jinja_env.globals.update(
+        STATUS=STATUS, PRIORITIES=PRIORITIES, SKILLS=SKILLS, SKILL_AREAS=SKILL_AREAS, WORK_TYPES=WORK_TYPES,
+        STAGES=STAGES, is_overdue=is_overdue, stage_index=stage_index, pr_number=pr_number,
+        skill_score=skill_score, session_mins=lambda s: session_minutes(s, utcnow()))
+
+    @app.context_processor
+    def nav_counts():
+        counts = {}
+        if getattr(g, "user", None) is not None and g.user.role == "admin":
+            counts["review"] = Assignment.query.filter_by(status="submitted").count()
+        return {"nav_counts": counts}
 
 
 def register_errors(app):
@@ -1003,270 +1289,6 @@ def register_errors(app):
         return page(500, "Something went wrong", "An unexpected error occurred. Nothing has been exposed; please try again.")
 
 
-# --------------------------------------------------------------------------- project workflow, submissions and agreement
-DEFAULT_STAGES = ["Requirements", "Development", "File Submission", "Admin Review", "Corrections", "Testing", "Deployment", "Final Delivery"]
-ALLOWED_UPLOAD_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "zip", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "md", "py", "js", "css", "html", "json"}
-
-def _ensure_project_stages():
-    if ProjectStage.query.count() == 0:
-        for i, name in enumerate(DEFAULT_STAGES):
-            db.session.add(ProjectStage(name=name, position=i, status="current" if i == 0 else "upcoming", progress=0, admin_approved=True))
-        db.session.commit()
-
-@bp.route("/admin/project")
-@admin_required
-def project_admin():
-    _ensure_project_stages()
-    stages = ProjectStage.query.order_by(ProjectStage.position, ProjectStage.id).all()
-    updates = ProjectUpdate.query.order_by(ProjectUpdate.created_at.desc()).all()
-    files = ProjectFile.query.order_by(ProjectFile.uploaded_at.desc()).all()
-    agreement = ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first()
-    notices = ProjectNotice.query.order_by(ProjectNotice.created_at.desc()).limit(30).all()
-    active_members = User.query.filter_by(role="member", is_active=True).order_by(User.name).all()
-    notice_ack_counts = {n.id: ProjectNoticeAcknowledgement.query.filter_by(notice_id=n.id).count() for n in notices}
-    notice_ack_user_ids = {n.id: [r[0] for r in db.session.query(ProjectNoticeAcknowledgement.user_id).filter_by(notice_id=n.id).all()] for n in notices}
-    return render_template("project_admin.html", stages=stages, updates=updates, files=files, agreement=agreement,
-                           notices=notices, active_members=active_members, notice_ack_counts=notice_ack_counts,
-                           notice_ack_user_ids=notice_ack_user_ids,
-                           live_app_url=current_app.config.get("LIVE_APPLICATION_URL", "").strip())
-
-@bp.route("/admin/project/stages", methods=["POST"])
-@admin_required
-def project_stage_create():
-    name = clean(request.form.get("name"), 120)
-    if not name:
-        flash("Stage name is required.", "error")
-        return redirect(url_for("web.project_admin"))
-    pos = (db.session.query(func.max(ProjectStage.position)).scalar() or -1) + 1
-    db.session.add(ProjectStage(name=name, description=clean(request.form.get("description"), 20000), position=pos, status="upcoming", progress=0, updated_by=g.user.id, admin_approved=True))
-    audit("project_stage_created", name, g.user.id); db.session.commit()
-    flash("Workflow stage created.", "success")
-    return redirect(url_for("web.project_admin"))
-
-@bp.route("/admin/project/stages/<int:sid>", methods=["POST"])
-@admin_required
-def project_stage_update(sid):
-    stage = db.session.get(ProjectStage, sid) or abort(404)
-    name = clean(request.form.get("name"), 120)
-    status = clean(request.form.get("status"), 20)
-    try: position = int(request.form.get("position", stage.position))
-    except ValueError: position = stage.position
-    try: progress = max(0, min(100, int(request.form.get("progress", stage.progress))))
-    except ValueError: progress = stage.progress
-    if not name or status not in {"upcoming", "current", "completed", "blocked", "awaiting_approval"}:
-        flash("Enter a stage name and valid status.", "error"); return redirect(url_for("web.project_admin"))
-    stage.name, stage.description, stage.position = name, clean(request.form.get("description"), 20000), max(0, position)
-    stage.status, stage.progress = status, progress
-    stage.responsible_person = clean(request.form.get("responsible_person"), 120)
-    stage.updated_by, stage.admin_approved = g.user.id, True
-    audit("project_stage_updated", f"stage={sid}; name={name}; status={status}; progress={progress}", g.user.id)
-    db.session.commit(); flash("Workflow stage updated.", "success")
-    return redirect(url_for("web.project_admin"))
-
-@bp.route("/admin/project/stages/<int:sid>/delete", methods=["POST"])
-@admin_required
-def project_stage_delete(sid):
-    stage = db.session.get(ProjectStage, sid) or abort(404)
-    audit("project_stage_deleted", f"stage={sid}; name={stage.name}", g.user.id)
-    db.session.delete(stage); db.session.commit(); flash("Workflow stage deleted.", "success")
-    return redirect(url_for("web.project_admin"))
-
-@bp.route("/project/submit", methods=["POST"])
-@login_required
-def project_submit():
-    title = clean(request.form.get("title"), 200); description = clean(request.form.get("description"), 200000)
-    if not title or not description:
-        flash("A title and description are required.", "error"); return redirect(url_for("web.dashboard"))
-    item = ProjectUpdate(title=title, description=description, submitted_by=g.user.id, status="pending")
-    db.session.add(item); db.session.flush()
-    audit("project_update_submitted", f"update={item.id}", g.user.id); db.session.commit()
-    flash("Your update is pending Admin review.", "success"); return redirect(url_for("web.dashboard"))
-
-@bp.route("/admin/project/updates/<int:uid>/review", methods=["POST"])
-@admin_required
-def project_update_review(uid):
-    item = db.session.get(ProjectUpdate, uid) or abort(404)
-    decision = clean(request.form.get("decision"), 20)
-    if decision not in {"approved", "rejected", "corrections"}: abort(400)
-    item.status, item.reviewer_comment, item.reviewed_by, item.reviewed_at = decision, clean(request.form.get("comment"), 10000), g.user.id, utcnow()
-    audit("project_update_reviewed", f"update={uid}; decision={decision}", g.user.id); db.session.commit()
-    flash("Submission review saved.", "success"); return redirect(url_for("web.project_admin"))
-
-# --------------------------------------------------------------------------- project file uploads and member update notices
-IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
-
-
-def _project_upload_dir():
-    folder = Path(current_app.instance_path) / "nwp_uploads"
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-
-def _allowed_upload(filename, allowed=ALLOWED_UPLOAD_EXTENSIONS):
-    return bool(filename and "." in filename and filename.rsplit(".", 1)[1].lower() in allowed)
-
-
-@bp.route("/project/files/upload", methods=["POST"])
-@login_required
-def project_file_upload():
-    if g.user.role != "member":
-        abort(403)
-    uploaded = request.files.get("file")
-    title = clean(request.form.get("title"), 200)
-    repo_path = clean(request.form.get("file_path"), 1000)
-    notes = clean(request.form.get("submission_notes"), 10000)
-    if not uploaded or not uploaded.filename:
-        flash("Choose a file to upload.", "error")
-        return redirect(url_for("web.dashboard"))
-    original_name = secure_filename(uploaded.filename)[:255]
-    if not original_name or not _allowed_upload(original_name):
-        flash("This file type is not allowed. Upload a document, image, archive, or source file.", "error")
-        return redirect(url_for("web.dashboard"))
-    if not title:
-        title = original_name[:200]
-    token = secrets.token_hex(20)
-    stored_name = f"{token}.{original_name.rsplit('.', 1)[1].lower()}"
-    file_data = uploaded.read()
-    if not file_data:
-        flash("The selected file is empty.", "error")
-        return redirect(url_for("web.dashboard"))
-    item = ProjectFile(title=title, filename=original_name, storage_path=stored_name, file_data=file_data,
-                       description=notes, submission_notes=repo_path, submitted_by=g.user.id, status="pending")
-    db.session.add(item)
-    db.session.flush()
-    audit("project_file_uploaded", f"file={item.id}; title={title}", g.user.id)
-    db.session.commit()
-    flash("File uploaded and sent to the Admin for review.", "success")
-    return redirect(url_for("web.dashboard"))
-
-
-@bp.route("/project/files/<int:file_id>/download")
-@login_required
-def project_file_download(file_id):
-    item = db.session.get(ProjectFile, file_id) or abort(404)
-    permitted = (g.user.role == "admin" or item.submitted_by == g.user.id or
-                 (g.user.role in {"founder", "connector"} and item.status == "approved"))
-    if not permitted:
-        abort(403)
-    if item.file_data:
-        return send_file(io.BytesIO(item.file_data), as_attachment=True, download_name=item.filename,
-                         conditional=True, max_age=0)
-    # Backward compatibility for files stored by earlier versions on local disk.
-    if not item.storage_path or Path(item.storage_path).name != item.storage_path:
-        abort(404)
-    return send_from_directory(_project_upload_dir(), item.storage_path, as_attachment=True,
-                               download_name=item.filename, conditional=True)
-
-
-@bp.route("/project/signatures/<int:confirmation_id>")
-@login_required
-def project_signature_view(confirmation_id):
-    confirmation = db.session.get(AgreementConfirmation, confirmation_id) or abort(404)
-    if g.user.role not in PROJECT_ROLES:
-        abort(403)
-    stored_name = confirmation.signature_path or ""
-    if not stored_name or Path(stored_name).name != stored_name or stored_name.startswith("http"):
-        abort(404)
-    if confirmation.signature_data:
-        suffix = stored_name.rsplit(".", 1)[-1].lower()
-        mimetype = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}.get(suffix)
-        if not mimetype: abort(404)
-        return send_file(io.BytesIO(confirmation.signature_data), mimetype=mimetype, as_attachment=False, max_age=0)
-    return send_from_directory(_project_upload_dir(), stored_name, as_attachment=False, conditional=True)
-
-
-@bp.route("/admin/project/files/<int:file_id>/review", methods=["POST"])
-@admin_required
-def project_file_review(file_id):
-    item = db.session.get(ProjectFile, file_id) or abort(404)
-    decision = clean(request.form.get("decision"), 20)
-    if decision not in {"approved", "rejected", "corrections"}:
-        abort(400)
-    item.status = decision
-    item.reviewer_comment = clean(request.form.get("comment"), 10000)
-    item.reviewed_by = g.user.id
-    item.reviewed_at = utcnow()
-    audit("project_file_reviewed", f"file={file_id}; decision={decision}", g.user.id)
-    db.session.commit()
-    flash("File review saved.", "success")
-    return redirect(url_for("web.project_admin"))
-
-
-@bp.route("/admin/project/notices", methods=["POST"])
-@admin_required
-def project_notice_create():
-    title = clean(request.form.get("title"), 200)
-    message = clean(request.form.get("message"), 20000)
-    if not title or not message:
-        flash("Enter both a notice title and message.", "error")
-        return redirect(url_for("web.project_admin"))
-    notice = ProjectNotice(title=title, message=message, created_by=g.user.id)
-    db.session.add(notice)
-    db.session.flush()
-    audit("project_notice_published", f"notice={notice.id}; title={title}", g.user.id)
-    db.session.commit()
-    flash("Update notice published to member dashboards.", "success")
-    return redirect(url_for("web.project_admin"))
-
-
-@bp.route("/project/notices/<int:notice_id>/acknowledge", methods=["POST"])
-@login_required
-@member_required
-def project_notice_acknowledge(notice_id):
-    notice = db.session.get(ProjectNotice, notice_id) or abort(404)
-    existing = ProjectNoticeAcknowledgement.query.filter_by(notice_id=notice.id, user_id=g.user.id).first()
-    if not existing:
-        db.session.add(ProjectNoticeAcknowledgement(notice_id=notice.id, user_id=g.user.id))
-        audit("project_notice_acknowledged", f"notice={notice.id}", g.user.id)
-        db.session.commit()
-        flash("You acknowledged this application update.", "success")
-    else:
-        flash("You have already acknowledged this update.", "info")
-    return redirect(url_for("web.dashboard"))
-
-
-DEFAULT_AGREEMENT = """NEXORA WORKPULSE PROJECT AGREEMENT\n\nProject: NEXORA WORKPULSE\nProject lead: Ravi Teja Lingala and team\nFounders: Seema and Hrithik\nConnector: Naveen\nFixed project budget: US$6,500\n\nScope and responsibilities: The project team will work on the agreed NEXORA WORKPULSE application scope, implementation, testing, deployment preparation, and handover. The Admin coordinates project tasks and approves changes before they become visible to the Founders and Connector.\n\nDelivery and changes: Work is tracked through the project workflow. Requested changes are reviewed by the Admin and may be approved, rejected, or returned for correction. This agreement does not specify a payment schedule or additional commercial terms.\n\nSignatures and confirmation: Each participant may review the current version and submit an explicit confirmation. Confirmations are recorded with timestamps against the agreement version.\n\nStatus: Draft until finalized by the Admin."""
-
-@bp.route("/project/agreement", methods=["GET", "POST"])
-@login_required
-def project_agreement():
-    agreement = ProjectAgreement.query.order_by(ProjectAgreement.version.desc()).first()
-    if agreement is None:
-        agreement = ProjectAgreement(version=1, body=DEFAULT_AGREEMENT, status="draft", updated_by=g.user.id)
-        db.session.add(agreement); db.session.commit()
-    if request.method == "POST":
-        if g.user.role == "admin":
-            body = request.form.get("body", "")
-            if len(body) > 200000: abort(413)
-            agreement = ProjectAgreement(version=agreement.version + 1, body=body, title=clean(request.form.get("title"), 200) or "NEXORA WORKPULSE Project Agreement", status="finalized" if request.form.get("action") == "finalize" else "draft", updated_by=g.user.id)
-            db.session.add(agreement); db.session.commit(); audit("agreement_version_saved", f"version={agreement.version}; status={agreement.status}", g.user.id); db.session.commit()
-            flash("Agreement version saved.", "success")
-        elif request.form.get("confirm") == "yes":
-            uploaded = request.files.get("signature_file")
-            if not uploaded or not uploaded.filename:
-                flash("Choose a signature image file before confirming.", "error")
-            else:
-                original = secure_filename(uploaded.filename)
-                if not _allowed_upload(original, IMAGE_EXTENSIONS):
-                    flash("Signature must be a PNG, JPG, JPEG, WEBP, or GIF image.", "error")
-                else:
-                    stored_name = f"signature-{secrets.token_hex(20)}.{original.rsplit('.', 1)[1].lower()}"
-                    signature_data = uploaded.read()
-                    if not signature_data:
-                        flash("The selected signature image is empty.", "error")
-                        return redirect(url_for("web.project_agreement"))
-                    confirmation = AgreementConfirmation(agreement_id=agreement.id, user_id=g.user.id,
-                                                         confirmation="confirmed", signature_path=stored_name,
-                                                         signature_data=signature_data)
-                    db.session.add(confirmation)
-                    db.session.commit()
-                    audit("agreement_confirmed", f"agreement={agreement.id}; signature_uploaded=true", g.user.id)
-                    db.session.commit()
-                    flash("Agreement confirmation and signature image recorded.", "success")
-        return redirect(url_for("web.project_agreement"))
-    confirmations = AgreementConfirmation.query.filter_by(agreement_id=agreement.id).order_by(AgreementConfirmation.confirmed_at.desc()).all()
-    return render_template("project_agreement.html", agreement=agreement, confirmations=confirmations)
-
 # --------------------------------------------------------------------------- CLI
 def run_migrations():
     folder = Path(__file__).parent / "migrations"
@@ -1293,8 +1315,6 @@ def create_admin(email, password, name="Administrator"):
         return False, "An account with that email already exists; nothing changed."
     u = User(name=name[:80], email=email, role="admin", password_hash=generate_password_hash(password))
     db.session.add(u)
-    db.session.flush()
-    db.session.add(AuditLog(user_id=u.id, action="admin_created", detail="Initial administrator created"))
     db.session.commit()
     return True, f"Administrator {email} created."
 
@@ -1306,7 +1326,7 @@ def prepare_database():
         print("An administrator already exists; skipping admin bootstrap.")
     elif os.environ.get("ADMIN_EMAIL") and os.environ.get("ADMIN_PASSWORD"):
         print(create_admin(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"],
-                           os.environ.get("ADMIN_NAME", "Ravi Teja Lingala"))[1])
+                           os.environ.get("ADMIN_NAME", "Administrator"))[1])
     else:
         print("No administrator yet. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env and start again.")
 
@@ -1317,13 +1337,63 @@ def register_cli(app):
         """Apply SQL migrations (safe, additive) and create the first admin if none exists."""
         prepare_database()
 
+    @app.cli.command("wipe-data")
+    def wipe_data_cmd():
+        """Delete ALL WorkPulse records (keeps administrator accounts and settings). Cannot be undone."""
+        if input(f"Type {WIPE_PHRASE} to permanently delete all WorkPulse data: ").strip() != WIPE_PHRASE:
+            raise SystemExit("Cancelled. Nothing was deleted.")
+        wipe_all_data()
+        db.session.commit()
+        print("All WorkPulse data deleted. Administrator accounts were kept.")
+
     @app.cli.command("create-admin")
     def create_admin_cmd():
         """Create an administrator from ADMIN_EMAIL / ADMIN_PASSWORD (never overwrites)."""
         ok, msg = create_admin(os.environ.get("ADMIN_EMAIL"), os.environ.get("ADMIN_PASSWORD"),
-                               os.environ.get("ADMIN_NAME", "Ravi Teja Lingala"))
+                               os.environ.get("ADMIN_NAME", "Administrator"))
         print(msg)
         raise SystemExit(0 if ok else 1)
+
+
+DEMO_ADMIN = ("admin@example.com", "Admin-Demo-2026!")
+DEMO_MEMBER_PW = "Member-Demo-2026!"
+
+
+def demo_config():
+    """Local-only fallback: SQLite file + auto-generated secret, so the app can be explored with zero setup."""
+    base = Path(__file__).parent
+    keyfile = base / ".local_secret"
+    if not keyfile.exists():
+        keyfile.write_text(secrets.token_urlsafe(48))
+    return {
+        "SECRET_KEY": keyfile.read_text().strip(),
+        "SQLALCHEMY_DATABASE_URI": "sqlite:///" + str(base / "workpulse_demo.db"),
+        "APP_TIMEZONE": os.environ.get("APP_TIMEZONE", "Asia/Kolkata"),
+        "DAILY_TARGET_MINUTES": 240, "SESSION_MAX_HOURS": 16,
+        "DEV_MODE": True, "SESSION_COOKIE_SECURE": False,
+        **github_config(),
+    }
+
+
+def seed_demo():
+    if User.query.count():
+        return
+    today = local_today()
+    db.session.add(User(name="Demo Admin", email=DEMO_ADMIN[0], role="admin",
+                        password_hash=generate_password_hash(DEMO_ADMIN[1])))
+    members = [User(name=n, email=e, role="member", password_hash=generate_password_hash(DEMO_MEMBER_PW))
+               for n, e in (("Mia Member", "mia@example.com"), ("Raj Member", "raj@example.com"))]
+    db.session.add_all(members)
+    db.session.flush()
+    t = Task(title="Build the login API endpoint", description="Create a POST /api/login endpoint with input "
+             "validation and rate limiting. Open a pull request when ready.", priority="high", target_hours=3,
+             start_date=today, deadline=today + timedelta(days=3), work_type="backend",
+             expected_deliverable="Merged pull request", instructions="Write tests for the happy path.", created_by=1)
+    db.session.add(t)
+    db.session.flush()
+    for m in members:
+        db.session.add(Assignment(task_id=t.id, user_id=m.id))
+    db.session.commit()
 
 
 if __name__ == "__main__":
@@ -1334,17 +1404,19 @@ if __name__ == "__main__":
         load_dotenv(Path(__file__).parent / ".env", override=True)
     except ImportError:
         pass
-    _demo = False
-    if not os.environ.get("DATABASE_URL", "").strip():
-        raise SystemExit("DATABASE_URL is required. Configure the existing database; demo accounts are disabled.")
+    _demo = not os.environ.get("DATABASE_URL", "").strip()
     try:
-        _app = create_app()
+        _app = create_app(demo_config()) if _demo else create_app()
     except ConfigError as exc:
         raise SystemExit(f"\nCONFIGURATION ERROR: {exc}\n")
     try:
         with _app.app_context():
-            print("Connecting to the configured database and preparing tables ...")
-            prepare_database()
+            if _demo:
+                db.create_all()
+                seed_demo()
+            else:
+                print("Connecting to the database and preparing tables ...")
+                prepare_database()
     except Exception as exc:  # noqa: BLE001
         raise SystemExit("\nDATABASE ERROR: could not connect or set up the tables.\n"
                          "Check DATABASE_URL (use the Supabase *Session pooler* string, correct password).\n"
@@ -1352,7 +1424,11 @@ if __name__ == "__main__":
     _port = int(os.environ.get("PORT", "5000"))
     print("\n" + "=" * 62)
     print("NEXORA WORKPULSE is running.   Open:  http://127.0.0.1:%d" % _port)
-    # Demo-account credentials are intentionally not printed or provisioned.
+    if _demo:
+        print("DEMO MODE (no Supabase needed; data is in workpulse_demo.db)")
+        print("  Admin  : %s  /  %s" % DEMO_ADMIN)
+        print("  Member : mia@example.com  /  %s" % DEMO_MEMBER_PW)
+        print("  Member : raj@example.com  /  %s" % DEMO_MEMBER_PW)
     print("Press CTRL+C to stop.")
     print("=" * 62 + "\n")
     _app.run(host="127.0.0.1", port=_port, debug=False)

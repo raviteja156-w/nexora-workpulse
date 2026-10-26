@@ -1,9 +1,0 @@
-{% extends 'base.html' %}
-{% block title %}Daily acknowledgement{% endblock %}
-{% block content %}
-<div class="card">
-  <h1>Daily work acknowledgement</h1>
-  {% for e in errors %}<div class="flash flash-error" role="alert">{{ e }}</div>{% endfor %}
-  {% include '_ack_form.html' %}
-</div>
-{% endblock %}

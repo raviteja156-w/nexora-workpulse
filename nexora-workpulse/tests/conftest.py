@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from werkzeug.security import generate_password_hash
 
 from app import create_app
-from models import User, db
+from models import User, db, utcnow
 
 PW = "CorrectHorse-Battery9"
 TEST_CONFIG = {"TESTING": True, "SECRET_KEY": "k" * 40, "SQLALCHEMY_DATABASE_URI": "sqlite://",
@@ -21,8 +21,10 @@ def make_app(**extra):
     with app.app_context():
         db.create_all()
         db.session.add(User(name="Ada Admin", email="admin@example.com", role="admin", password_hash=generate_password_hash(PW)))
-        db.session.add(User(name="Mia Member", email="mia@example.com", role="member", password_hash=generate_password_hash(PW)))
-        db.session.add(User(name="Raj Member", email="raj@example.com", role="member", password_hash=generate_password_hash(PW)))
+        db.session.add(User(name="Mia Member", email="mia@example.com", role="member", password_hash=generate_password_hash(PW),
+                            skill_backend="high", skill_database="good", skill_frontend="moderate", onboarded_at=utcnow()))
+        db.session.add(User(name="Raj Member", email="raj@example.com", role="member", password_hash=generate_password_hash(PW),
+                            skill_backend="moderate", skill_database="high", skill_frontend="high", onboarded_at=utcnow()))
         db.session.commit()
     return app
 

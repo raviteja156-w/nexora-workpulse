@@ -1,101 +1,388 @@
+
 {% extends 'base.html' %}
 {% from '_icons.html' import icon %}
-{% block title %}My dashboard{% endblock %}
-{% block content %}
-<div class="page-head"><div><h1>Welcome, {{ g.user.name.split(' ')[0] }}</h1><p class="muted">Here is your day at a glance.</p></div>{% if live_app_url %}<a class="btn btn-success" href="{{ live_app_url }}" target="_blank" rel="noopener">View Live Application ↗</a>{% endif %}</div>
-{% if project_stages %}<section class="card"><h2>NEXORA project workflow</h2><div class="workflow-public">{% for stage in project_stages %}<div class="public-stage {{ 'is-current' if stage.status == 'current' else 'is-complete' if stage.status == 'completed' else '' }}"><span class="public-stage-dot">{% if stage.status == 'completed' %}✓{% else %}{{ loop.index }}{% endif %}</span><div><b>{{ stage.name }}</b><p class="muted">{{ stage.status|replace('_',' ')|capitalize }} · {{ stage.progress }}%</p></div><div class="bar"><i data-progress="{{ stage.progress }}"></i></div></div>{% endfor %}</div></section>{% endif %}
-<section class="card"><h2>Submit project update</h2><p class="muted">Submissions remain private until the Admin reviews them.</p><form method="post" action="{{ url_for('web.project_submit') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Title</label><input name="title" maxlength="200" required><label>Description / notes</label><textarea name="description" rows="4" maxlength="200000" required></textarea><button class="btn btn-primary">Submit for Admin review</button></form></section>
-{% if approved_project_updates %}<section class="card"><h2>Admin-approved updates</h2>{% for item in approved_project_updates %}<article class="submission-card"><h3>{{ item.title }}</h3><p class="muted">{{ item.reviewed_at|ldt }}</p><p class="pre">{{ item.description }}</p></article>{% endfor %}</section>{% endif %}
+{% from '_ui.html' import csrf, stage_bar, state_badge, meter %}
 
-{% if project_notices %}<section class="card"><h2>Application update notices</h2><p class="muted">The Admin posts these notices when an application update is ready. Acknowledge each update after reviewing it.</p>{% for notice in project_notices %}<article class="submission-card"><div class="page-head"><div><h3>{{ notice.title }}</h3><small class="muted">Posted {{ notice.created_at|ldt }}{% if notice.creator %} by {{ notice.creator.name }}{% endif %}</small></div>{% if notice.id in acknowledged_notice_ids %}<span class="badge badge-green">Acknowledged</span>{% else %}<span class="badge badge-amber">Needs acknowledgement</span>{% endif %}</div><p class="pre">{{ notice.message }}</p>{% if notice.id not in acknowledged_notice_ids %}<form method="post" action="{{ url_for('web.project_notice_acknowledge', notice_id=notice.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-success btn-sm">Acknowledge update</button></form>{% endif %}</article>{% endfor %}</section>{% endif %}
-<section class="card"><h2>Upload updated project files</h2><p class="muted">Upload your deliverable or updated file and include its project/repository path if relevant. Files remain pending until the Admin reviews them.</p><form method="post" action="{{ url_for('web.project_file_upload') }}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label for="project-file-title">File title</label><input id="project-file-title" name="title" maxlength="200" required placeholder="e.g. Updated member dashboard"><label for="project-file">Choose file</label><input id="project-file" type="file" name="file" required accept=".png,.jpg,.jpeg,.webp,.gif,.zip,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.md,.py,.js,.css,.html,.json"><label for="project-file-path">Project / repository path (optional)</label><input id="project-file-path" name="file_path" maxlength="1000" placeholder="e.g. templates/member_dashboard.html"><label for="project-file-notes">Notes (optional)</label><textarea id="project-file-notes" name="submission_notes" rows="3" maxlength="10000" placeholder="What changed in this file?"></textarea><button class="btn btn-primary">Upload file for Admin review</button></form></section>
-{% if member_project_files %}<section class="card"><h2>My uploaded files</h2><div class="table-wrap"><table><thead><tr><th>File</th><th>Path</th><th>Uploaded</th><th>Status</th><th>Admin review</th></tr></thead><tbody>{% for item in member_project_files %}<tr><td><a class="link" href="{{ url_for('web.project_file_download', file_id=item.id) }}">{{ item.title }}</a><br><small>{{ item.filename }}</small></td><td>{{ item.submission_notes or '—' }}</td><td>{{ item.uploaded_at|ldt }}</td><td><span class="badge {{ 'badge-green' if item.status == 'approved' else 'badge-red' if item.status == 'rejected' else 'badge-amber' }}">{{ item.status|capitalize }}</span></td><td>{{ item.reviewer_comment or '—' }}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+{% block title %}My dashboard{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">
+      {{ icon('sparkles', 14, 'a-spin') }} {{ today|ldate }}
+    </div>
+
+    <h1>
+      Hi {{ g.user.name.split(' ')[0] }},
+      <span class="grad">let's build.</span>
+    </h1>
+
+    <p class="muted">
+      Your timer runs while you're signed in. Post progress on each task you touch today.
+    </p>
+
+    <div class="chips">
+      {{ state_badge(state[0], state[1]) }}
+
+      <span class="chip">
+        {{ icon('tasks', 15) }}
+        {{ assignments|rejectattr('status', 'equalto', 'completed')|list|length }}
+        open task(s)
+      </span>
+
+      {% if overdue %}
+      <span
+        class="chip"
+        style="border-color:rgba(244,63,94,.5);color:#fda4af"
+      >
+        {{ icon('flame', 15, 'a-wiggle') }} {{ overdue|length }} overdue
+      </span>
+      {% endif %}
+    </div>
+  </div>
+
+  <img
+    class="hero-art"
+    src="{{ url_for('static', filename='img/hero.svg') }}"
+    alt="Animated illustration of a work dashboard"
+    width="320"
+    height="240"
+  >
+</section>
 
 {% include '_observed.html' %}
 
-{% if overdue %}<div class="flash flash-error" role="alert">{{ icon('alert', 18) }} {{ overdue|length }} task(s) are overdue. Update progress or submit them for review.</div>{% endif %}
-{% if not ack_today and (day.active or minutes > 0) %}<div class="flash flash-warning" role="alert">{{ icon('alert', 18) }} You have not submitted today's work acknowledgement yet.</div>{% endif %}
-{% if day.incomplete %}<div class="flash flash-warning" role="alert">{{ icon('alert', 18) }} One of today's sessions is flagged incomplete (it ran past the maximum length). Clock out to close it.</div>{% endif %}
+{% if day.incomplete %}
+<div class="flash flash-warning" role="alert">
+  {{ icon('alert', 18) }}
+  <span>
+    A session ran past the maximum length and was flagged incomplete.
+    Stop and restart your timer.
+  </span>
+</div>
+{% endif %}
 
-<div class="grid-2">
-  <section class="card clock-card">
-    <h2>Attendance</h2>
-    <div class="ring-wrap">
-      <div class="ring" data-ring-progress="{{ pct }}"><div class="ring-in"><strong>{{ minutes|hm }}</strong><span>of {{ target|hm }}</span></div></div>
-      <div class="ring-info">
-        <span class="badge badge-{{ 'green' if status == 'Clocked In' else 'amber' if status == 'On Break' else 'slate' }}">{{ status }}</span>
-        {% if minutes >= target %}<span class="badge badge-green">{{ icon('check', 14) }} Target achieved</span>
-        {% else %}<p class="muted"><b>{{ remaining|hm }}</b> remaining to reach the {{ target|hm }} target.</p>{% endif %}
-        {% if day.first_in %}<p class="muted">First login today: {{ day.first_in|ltime }}</p>{% endif %}
+<div class="split">
+  <div class="col">
+
+    <section class="card glow">
+      <div class="card-head">
+        <h2>
+          <span class="card-ic t-cyan">
+            {{ icon('clock', 18, 'a-tick') }}
+          </span>
+          Today's hours
+        </h2>
+
+        {{ state_badge(state[0], state[1]) }}
       </div>
-    </div>
-    <div class="btn-row">
-      {% if day.active %}
-        <form method="post" action="{{ url_for('web.clock_out') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-danger">Clock out</button></form>
-        {% if day.on_break %}
-          <form method="post" action="{{ url_for('web.break_end') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary">End break</button></form>
-        {% else %}
-          <form method="post" action="{{ url_for('web.break_start') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-ghost">Start break</button></form>
-        {% endif %}
-      {% else %}
-        <form method="post" action="{{ url_for('web.clock_in') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-success">Clock in</button></form>
-      {% endif %}
-    </div>
-    <p class="note">Times are recorded by the server. Recorded duration measures attendance, not continuous productivity; task updates and deliverables are the evidence of work.</p>
-  </section>
 
-  <section class="card">
-    <h2>Last 7 days</h2>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Date</th><th>In</th><th>Out</th><th>Recorded</th><th>Target</th></tr></thead>
-      <tbody>{% for d, v in history %}
-        <tr><td>{{ d.strftime('%a %d %b') }}</td><td>{{ v.first_in|ltime }}</td>
-          <td>{% if v.active %}<span class="badge badge-green">Active</span>{% else %}{{ v.last_out|ltime }}{% endif %}</td>
-          <td>{{ v.minutes|hm }}</td>
-          <td>{% if v.minutes >= target %}<span class="badge badge-green">Met</span>{% elif v.sessions %}<span class="badge badge-amber">Below</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>
-      {% endfor %}</tbody></table></div>
-    <a class="link" href="{{ url_for('web.attendance_history') }}">Full attendance history</a>
-  </section>
+      <div class="timer">
+        <div
+          class="ring {{ 'done' if minutes >= target }}"
+          data-ring-progress="{{ pct }}"
+        >
+          <div class="ring-in">
+            <strong>{{ minutes|hm }}</strong>
+            <span>of {{ target|hm }} target</span>
+          </div>
+        </div>
+
+        <div class="timer-info">
+          {% if minutes >= target %}
+          <span class="big grad">Target reached! 🎉</span>
+          <span class="badge badge-green">
+            {{ icon('check', 13) }} Target achieved
+          </span>
+          {% else %}
+          <span class="big">
+            <b class="grad-2">{{ remaining|hm }}</b> to go
+          </span>
+          {% endif %}
+
+          <span class="muted">
+            {% if day.first_in %}
+              Signed in at {{ day.first_in|ltime }}
+            {% else %}
+              Timer not started today
+            {% endif %}
+          </span>
+
+          <div class="btn-row">
+            {% if day.active %}
+              {% if day.on_break %}
+              <form method="post" action="{{ url_for('web.break_end') }}">
+                {{ csrf() }}
+                <button class="btn btn-success" type="submit">
+                  {{ icon('play', 16) }} Resume
+                </button>
+              </form>
+              {% else %}
+              <form method="post" action="{{ url_for('web.break_start') }}">
+                {{ csrf() }}
+                <button class="btn btn-ghost" type="submit">
+                  {{ icon('pause', 16) }} Pause
+                </button>
+              </form>
+              {% endif %}
+
+              <form method="post" action="{{ url_for('web.clock_out') }}">
+                {{ csrf() }}
+                <button class="btn btn-danger" type="submit">
+                  {{ icon('stop', 16) }} Stop for today
+                </button>
+              </form>
+            {% else %}
+            <form method="post" action="{{ url_for('web.clock_in') }}">
+              {{ csrf() }}
+              <button class="btn btn-success btn-lg" type="submit">
+                {{ icon('play', 16) }} Start work timer
+              </button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>
+          <span class="card-ic t-violet">
+            {{ icon('tasks', 18, 'a-float') }}
+          </span>
+          My tasks
+        </h2>
+      </div>
+
+      {% if not assignments %}
+      <div class="empty">
+        <img
+          src="{{ url_for('static', filename='img/empty.svg') }}"
+          alt=""
+          width="150"
+          height="112"
+        >
+        No tasks yet. Your admin will post them here.
+      </div>
+      {% else %}
+      <div class="task-list stagger">
+        {% for a in assignments %}
+        <a
+          class="task-card"
+          href="{{ url_for('web.my_task', aid=a.id) }}"
+          data-accent="{% if a.status == 'completed' %}g3{% elif is_overdue(a) %}g4{% else %}g1{% endif %}"
+        >
+          <div class="meta">
+            <span class="badge st-{{ a.status }}">
+              {{ STATUS[a.status] }}
+            </span>
+
+            <span class="badge prio-{{ a.task.priority }}">
+              {{ PRIORITIES[a.task.priority] }}
+            </span>
+
+            {% if a.task.work_type %}
+            <span class="wt wt-{{ a.task.work_type }}">
+              {{ WORK_TYPES[a.task.work_type] }}
+            </span>
+            {% endif %}
+          </div>
+
+          <h3>{{ a.task.title }}</h3>
+
+          {{ stage_bar(a) }}
+
+          <div class="bar" data-progress="{{ a.progress }}">
+            <i></i>
+          </div>
+
+          <div class="foot-row">
+            <span>
+              {{ icon('calendar', 14) }}
+              {{ a.task.deadline.strftime('%d %b') }}
+              {% if is_overdue(a) %}
+              · <b style="color:#fda4af">overdue</b>
+              {% endif %}
+            </span>
+
+            {% if a.id in updated_today %}
+            <span class="done-mark">
+              {{ icon('check', 14) }} Updated today
+            </span>
+            {% elif a.status not in ('submitted', 'completed') %}
+            <span class="go">
+              Post today's progress {{ icon('arrow', 15) }}
+            </span>
+            {% else %}
+            <span class="go">
+              View {{ icon('arrow', 15) }}
+            </span>
+            {% endif %}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </section>
+
+  </div>
+
+  <div class="col">
+
+    <section class="card">
+      <div class="card-head">
+        <h2>
+          <span
+            class="card-ic"
+            style="background:#0d1117;border:1px solid var(--line-2)"
+          >
+            {{ icon('github', 18, 'a-float') }}
+          </span>
+          Team repository
+        </h2>
+      </div>
+
+      {% if repo %}
+      <p class="muted" style="word-break:break-all">
+        {{ repo|replace('https://github.com/', '') }}
+      </p>
+
+      <div class="btn-row">
+        <a
+          class="btn btn-dark btn-sm"
+          href="{{ repo }}"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {{ icon('github', 15) }} Open repo
+        </a>
+
+        <a
+          class="btn btn-primary btn-sm"
+          href="{{ repo }}/compare"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {{ icon('pull', 15) }} New pull request
+        </a>
+
+        <a
+          class="btn btn-ghost btn-sm"
+          href="{{ repo }}/pulls"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {{ icon('list', 15) }} All PRs
+        </a>
+      </div>
+      {% else %}
+      <p class="muted">
+        Your admin hasn't connected a GitHub repository yet.
+      </p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>
+          <span class="card-ic t-green">
+            {{ icon('chart', 18, 'a-pulse') }}
+          </span>
+          Last 7 days
+        </h2>
+
+        <a class="link" href="{{ url_for('web.attendance_history') }}">
+          All {{ icon('arrow', 14) }}
+        </a>
+      </div>
+
+      {% if not history %}
+      <p class="empty">Your history starts today.</p>
+      {% endif %}
+
+      {% for r in history %}
+      <div class="history-row">
+        <span class="history-date">
+          {{ r.date.strftime('%a %d') }}
+        </span>
+
+        <span class="history-meter">
+          {{ meter(r.minutes, target) }}
+        </span>
+
+        <span class="hours">
+          {{ r.minutes|hm }}
+        </span>
+
+        <span
+          class="history-state"
+          title="{{ r.label }}"
+          data-state-color="{% if r.met %}met{% elif r.state in ('working', 'paused') %}active{% else %}other{% endif %}"
+        >
+          {{ icon('check' if r.met else 'zap' if r.state in ('working', 'paused') else 'x', 16) }}
+        </span>
+      </div>
+      {% endfor %}
+    </section>
+
+  </div>
 </div>
 
-<section class="card">
-  <h2>My tasks</h2>
-  {% if not assignments %}<p class="empty">No tasks are assigned to you yet. Your administrator will post them here.</p>{% else %}
-  <div class="table-wrap"><table>
-    <thead><tr><th>Task</th><th>Priority</th><th>Target</th><th>Deadline</th><th>Progress</th><th>Status</th><th></th></tr></thead>
-    <tbody>{% for a in assignments %}
-      <tr><td><b>{{ a.task.title }}</b></td>
-        <td><span class="badge prio-{{ a.task.priority }}">{{ PRIORITIES[a.task.priority] }}</span></td>
-        <td>{{ '%g' % a.task.target_hours }}h</td>
-        <td>{{ a.task.deadline.strftime('%d %b %Y') }}{% if is_overdue(a) %} <span class="badge badge-red">Overdue</span>{% endif %}</td>
-        <td><div class="bar" data-progress="{{ a.progress }}"><i></i></div><small>{{ a.progress }}%</small></td>
-        <td><span class="badge st-{{ a.status }}">{{ STATUS[a.status] }}</span></td>
-        <td><a class="btn btn-ghost btn-sm" href="{{ url_for('web.my_task', aid=a.id) }}">{{ 'View' if a.status in ('submitted','completed') else 'Update / submit' }}</a></td></tr>
-    {% endfor %}</tbody></table></div>{% endif %}
-</section>
-
-<section class="card">
-  <h2>Daily work acknowledgement {% if ack_today %}<span class="badge badge-green">Submitted today</span>{% else %}<span class="badge badge-amber">Not yet submitted</span>{% endif %}</h2>
-  {% include '_ack_form.html' %}
-</section>
+{% include '_workflow.html' %}
 
 <script>
-  // Set progress styles in JavaScript so the editor does not parse Jinja as CSS.
-  document.querySelectorAll('[data-progress]').forEach(function (element) {
-    var value = Number.parseFloat(element.getAttribute('data-progress'));
-    if (Number.isFinite(value)) {
-      value = Math.max(0, Math.min(100, value));
-      element.style.setProperty('--w', value + '%');
-      if (element.tagName.toLowerCase() === 'i') {
-        element.parentElement.style.setProperty('--w', value + '%');
-      }
+document.addEventListener('DOMContentLoaded', function () {
+  // Apply task-card accent colors without embedding Jinja in CSS values.
+  const accentColors = {
+    g1: 'var(--g1)',
+    g3: 'var(--g3)',
+    g4: 'var(--g4)'
+  };
+
+  document.querySelectorAll('.task-card[data-accent]').forEach(function (card) {
+    const accent = accentColors[card.dataset.accent];
+
+    if (accent) {
+      card.style.setProperty('--accent', accent);
     }
   });
-  document.querySelectorAll('[data-ring-progress]').forEach(function (element) {
-    var value = Number.parseFloat(element.getAttribute('data-ring-progress'));
-    if (Number.isFinite(value)) {
-      element.style.setProperty('--p', Math.max(0, Math.min(100, value)));
+
+  // Preserve the progress bar's percentage-based width.
+  document.querySelectorAll('.bar[data-progress]').forEach(function (bar) {
+    const progress = Number(bar.dataset.progress);
+
+    if (Number.isFinite(progress)) {
+      bar.style.setProperty(
+        '--w',
+        Math.max(0, Math.min(100, progress)) + '%'
+      );
     }
   });
+
+  // Apply the history status colors.
+  const stateColors = {
+    met: '#6ee7b7',
+    active: '#67e8f9',
+    other: '#fda4af'
+  };
+
+  document.querySelectorAll('.history-state[data-state-color]').forEach(function (item) {
+    const color = stateColors[item.dataset.stateColor];
+
+    if (color) {
+      item.style.color = color;
+    }
+  });
+
+  // Apply the timer ring progress, if the CSS uses --p as a percentage.
+  document.querySelectorAll('.ring[data-ring-progress]').forEach(function (ring) {
+    const progress = Number(ring.dataset.ringProgress);
+
+    if (Number.isFinite(progress)) {
+      ring.style.setProperty('--p', Math.max(0, Math.min(100, progress)) + '%');
+    }
+  });
+});
 </script>
 {% endblock %}

@@ -1,22 +1,192 @@
+```html
 {% extends 'base.html' %}
+{% from '_icons.html' import icon %}
+{% from '_ui.html' import csrf, avatar, skill_chips %}
+
 {% block title %}Team{% endblock %}
+
 {% block content %}
-<div class="page-head"><h1>Team accounts</h1><a class="btn btn-primary" href="{{ url_for('web.user_new') }}">Create team member</a></div>
-<section class="card"><div class="table-wrap"><table>
-  <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th>Actions</th></tr></thead>
-  <tbody>{% for u in users %}
-    <tr><td><b>{{ u.name }}</b></td><td>{{ u.email }}</td><td>{{ u.role|capitalize }}</td>
-      <td><span class="badge {{ 'badge-green' if u.is_active else 'badge-red' }}">{{ 'Active' if u.is_active else 'Disabled' }}</span></td>
-      <td>{{ u.last_login_at|ldt }}</td>
-      <td class="actions">
-        {% if u.id != g.user.id %}
-        <a class="btn btn-ghost btn-sm" href="{{ url_for('web.user_edit', uid=u.id) }}">Edit</a>
-        <form method="post" action="{{ url_for('web.user_toggle', uid=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="btn btn-sm {{ 'btn-danger' if u.is_active else 'btn-success' }}">{{ 'Disable' if u.is_active else 'Enable' }}</button></form>
-        <form method="post" action="{{ url_for('web.user_reset', uid=u.id) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="password" name="password" placeholder="New password" aria-label="New password for {{ u.name }}" autocomplete="new-password" required>
-          <button class="btn btn-ghost btn-sm">Reset</button></form>
-        {% else %}<span class="muted">You</span>{% endif %}
-      </td></tr>
-  {% endfor %}</tbody></table></div></section>
+<div class="page-head">
+  <div>
+    <div class="eyebrow">
+      {{ icon('users', 14, 'a-float') }}
+      {{ users|selectattr('role', 'equalto', 'member')|list|length }} member(s)
+    </div>
+
+    <h1>Your <span class="grad">team</span></h1>
+    <p class="muted">
+      Skills come from each member's first-sign-in self-rating.
+    </p>
+  </div>
+
+  <div class="head-actions">
+    <a class="btn btn-primary btn-lg" href="{{ url_for('web.user_new') }}">
+      {{ icon('plus', 18) }} Add team member
+    </a>
+  </div>
+</div>
+
+<div class="people">
+  {% for u in users %}
+  <article
+    class="person-card {{ 'off' if not u.is_active }}"
+    data-user-hue="{{ u.name|hue }}"
+    data-animation-delay="{{ loop.index0 * 0.05 }}"
+  >
+    <div class="row">
+      {{ avatar(u, 'lg') }}
+
+      <div style="flex:1; min-width:0">
+        <b style="font-size:1.05rem">{{ u.name }}</b>
+
+        <small style="display:block; overflow:hidden; text-overflow:ellipsis">
+          {{ u.email }}
+        </small>
+      </div>
+
+      <span class="badge {{ 'badge-violet' if u.role == 'admin' else 'badge-green' if u.is_active else 'badge-red' }}">
+        {{ 'Admin' if u.role == 'admin' else 'Active' if u.is_active else 'Disabled' }}
+      </span>
+    </div>
+
+    {% if u.role == 'member' %}
+    <div style="margin-top:12px">
+      {% if u.onboarded_at %}
+        {{ skill_chips(u) }}
+      {% else %}
+        <span class="badge badge-slate">
+          {{ icon('clock', 12) }} Skills pending first sign-in
+        </span>
+      {% endif %}
+    </div>
+
+    <div class="facts">
+      <div>
+        <strong>{{ counts.get(u.id, 0) }}</strong>
+        <span>Open tasks</span>
+      </div>
+
+      <div>
+        <strong>
+          {{ u.first_login_at.strftime('%d %b') if u.first_login_at else '—' }}
+        </strong>
+        <span>Joined</span>
+      </div>
+
+      <div>
+        <strong>
+          {{ u.last_login_at|ltime if u.last_login_at else '—' }}
+        </strong>
+        <span>Last in</span>
+      </div>
+    </div>
+
+    {% else %}
+    <p class="muted" style="margin:12px 0">
+      Last sign-in {{ u.last_login_at|ldt }}
+    </p>
+    {% endif %}
+
+    {% if u.id != g.user.id %}
+    <div class="acts">
+      <form
+        method="post"
+        action="{{ url_for('web.user_toggle', uid=u.id) }}"
+      >
+        {{ csrf() }}
+
+        <button
+          type="submit"
+          class="btn btn-sm {{ 'btn-ghost' if u.is_active else 'btn-success' }}"
+        >
+          {{ icon('pause' if u.is_active else 'play', 14) }}
+          {{ 'Disable' if u.is_active else 'Enable' }}
+        </button>
+      </form>
+
+      {% if u.role == 'member' %}
+      <form
+        method="post"
+        action="{{ url_for('web.user_delete', uid=u.id) }}"
+        class="delete-user-form"
+        data-user-name="{{ u.name }}"
+      >
+        {{ csrf() }}
+
+        <button type="submit" class="btn btn-sm btn-danger">
+          {{ icon('trash', 14) }} Delete
+        </button>
+      </form>
+      {% endif %}
+    </div>
+
+    <form
+      method="post"
+      action="{{ url_for('web.user_reset', uid=u.id) }}"
+      class="inline-form"
+      style="margin-top:10px"
+    >
+      {{ csrf() }}
+
+      <input
+        type="password"
+        name="password"
+        placeholder="New password"
+        aria-label="New password for {{ u.name }}"
+        autocomplete="new-password"
+        required
+      >
+
+      <button type="submit" class="btn btn-ghost btn-sm">
+        {{ icon('key', 14) }} Reset
+      </button>
+    </form>
+
+    {% else %}
+    <p class="muted" style="margin-top:12px">
+      {{ icon('user', 14) }} This is you
+    </p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  // Apply card animation delays without embedding Jinja in CSS.
+  document.querySelectorAll('.person-card[data-animation-delay]').forEach(function (card) {
+    const delay = Number(card.dataset.animationDelay);
+
+    if (Number.isFinite(delay) && delay >= 0) {
+      card.style.animationDelay = delay + 's';
+    }
+  });
+
+  // Apply the dynamic hue as a CSS custom property.
+  document.querySelectorAll('.person-card[data-user-hue]').forEach(function (card) {
+    const hue = card.dataset.userHue;
+
+    if (hue && /^[\w.-]+$/.test(hue)) {
+      card.style.setProperty('--h', hue);
+    }
+  });
+
+  // Confirm before deleting a team member.
+  document.querySelectorAll('.delete-user-form').forEach(function (form) {
+    form.addEventListener('submit', function (event) {
+      const userName = form.dataset.userName || 'this team member';
+
+      const confirmed = window.confirm(
+        'Are you sure you want to delete ' + userName +
+        '? This action cannot be undone.'
+      );
+
+      if (!confirmed) {
+        event.preventDefault();
+      }
+    });
+  });
+});
+</script>
 {% endblock %}
+```

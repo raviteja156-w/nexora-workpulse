@@ -15,7 +15,7 @@
   {% set done = t.assignments|selectattr('status', 'equalto', 'completed')|list|length %}
   {% set waiting = t.assignments|selectattr('status', 'equalto', 'submitted')|list|length %}
   {% set total = t.assignments|length %}
-  <a class="task-card" href="{{ url_for('web.task_detail', tid=t.id) }}" style="--accent: {{ 'var(--g3)' if total and done == total else 'var(--g1)' }}">
+  <a class="task-card ac-{{ '3' if total and done == total else '1' }}" href="{{ url_for('web.task_detail', tid=t.id) }}">
     <div class="meta">
       <span class="badge prio-{{ t.priority }}">{{ PRIORITIES[t.priority] }}</span>
       {% if t.work_type %}<span class="wt wt-{{ t.work_type }}">{{ WORK_TYPES[t.work_type] }}</span>{% endif %}
@@ -23,7 +23,7 @@
     </div>
     <h3>{{ t.title }}</h3>
     <div style="display:flex;padding-left:2px">{% for a in t.assignments[:6] %}<span style="margin-right:-8px">{{ avatar(a.user, 'sm') }}</span>{% endfor %}</div>
-    <div class="bar" style="--w: {{ (done * 100 / total)|int if total else 0 }}"><i></i></div>
+    <div class="bar wv-{{ (done * 100 / total)|int if total else 0 }}"><i></i></div>
     <div class="foot-row"><span>{{ icon('calendar', 14) }} {{ t.deadline.strftime('%d %b %Y') }} · {{ done }}/{{ total }} done</span><span class="go">Open {{ icon('arrow', 15) }}</span></div>
   </a>
   {% endfor %}

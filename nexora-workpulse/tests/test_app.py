@@ -592,3 +592,22 @@ def test_founder_pages_render(app, admin):
         assert admin.get(url).status_code == 200, url
     admin.post(f"/admin/founders/{pid}/delete", data={"confirm": "1"})
     assert b"set up</span>" in f.get("/dashboard").data
+
+
+def test_diagnostics_page_and_admin_error_detail(app, admin, mia):
+    html = admin.get("/admin/diagnostics").get_data(as_text=True)
+    assert "all links valid" in html
+    assert mia.get("/admin/diagnostics").status_code == 403
+    import app as appmod
+    app.config["PROPAGATE_EXCEPTIONS"] = False  # show the real error page, like production
+
+    def broken(p):
+        raise RuntimeError("boom-test")
+    orig = appmod.project_stats
+    appmod.project_stats = broken
+    try:
+        admin.post("/admin/founders/new", data={"name": "Acme"})
+        r = admin.get("/admin/founders/1")
+        assert r.status_code == 500 and b"boom-test" in r.data  # admins see the reason
+    finally:
+        appmod.project_stats = orig

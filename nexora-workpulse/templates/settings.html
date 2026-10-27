@@ -29,6 +29,12 @@
   {% endif %}
 </section>
 
+<section class="card">
+  <div class="card-head"><h2><span class="card-ic t-blue">{{ icon('settings', 18, 'a-spin') }}</span>Diagnostics</h2></div>
+  <p class="muted">Something not working? This read-only check shows exactly what fails.</p>
+  <a class="btn btn-cyan" href="{{ url_for('web.diagnostics') }}">{{ icon('eye', 16) }} Run diagnostics</a>
+</section>
+
 <section class="card danger-zone">
   <div class="card-head"><h2><span class="card-ic" style="background:linear-gradient(135deg,#e11d48,#f97316)">{{ icon('trash', 18, 'a-wiggle') }}</span>Delete all WorkPulse data</h2></div>
   <p class="muted">Start fresh: removes every team member, founder, founder project, agreement, task, hour record and progress update. You can choose to delete the other admin accounts too. Your own account always stays.</p>

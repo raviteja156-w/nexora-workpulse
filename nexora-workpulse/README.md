@@ -12,7 +12,7 @@
 * **Welcome tour + skill questions** on a member's first sign-in (backend, database, frontend: Moderate / Good enough / High). The task form suggests the best-fit member for the chosen work type.
 * **Daily progress** per task (progress %, what was done, pull request link) and a **task completion acknowledgement**. The daily acknowledgement form and the audit report are removed.
 * **GitHub**: set the team repository under *GitHub & data*. Members get Open repo / New pull request buttons and paste PR links. Admins review PRs and merge on GitHub, or in-app when `GITHUB_TOKEN` is set.
-* **Delete team members** (Team → Delete) and **Delete all WorkPulse data** (GitHub & data → Danger zone; keeps admin accounts). Same wipe as SQL: `tools/wipe_all_data.sql`, or `flask --app app wipe-data`.
+* **Delete team members** (Team → Delete) and **Delete all WorkPulse data** (GitHub & data → Danger zone; keeps admin accounts). Also available as `flask --app app wipe-data`.
 * Redesigned, animated, fully responsive UI (still no JavaScript).
 * Migration `0002_workflow_github_onboarding.sql` runs automatically on deploy (adds columns/tables only).
 

@@ -1525,6 +1525,64 @@ def project_delete(pid):
     return redirect(url_for("web.projects"))
 
 
+APP_VERSION = "v3.2 (2026-10-27)"
+
+
+@bp.route("/admin/diagnostics")
+@admin_required
+def diagnostics():
+    """Read-only health check: shows the database layout and tries every founder page part."""
+    checks, columns, migrations = [], [], []
+
+    def run(name, fn):
+        try:
+            result = fn()
+            checks.append((name, True, result if isinstance(result, str) else "OK"))
+        except Exception as exc:  # noqa: BLE001 - this page exists to show errors to the admin
+            db.session.rollback()
+            checks.append((name, False, f"{type(exc).__name__}: {' '.join(str(exc).split())[:500]}"))
+
+    try:
+        migrations = [r[0] for r in db.session.execute(text("SELECT version FROM nwp_schema_migrations ORDER BY version"))]
+    except Exception:  # noqa: BLE001
+        db.session.rollback()
+    try:
+        columns = [tuple(r) for r in db.session.execute(text(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_name LIKE 'nwp_%' ORDER BY table_name, ordinal_position"))]
+    except Exception:  # noqa: BLE001
+        db.session.rollback()
+    run("Count users by role", lambda: ", ".join(f"{r}: {n}" for r, n in db.session.execute(
+        text("SELECT role, COUNT(*) FROM nwp_users GROUP BY role"))))
+    run("Load founder accounts", lambda: f"{User.query.filter_by(role='founder').count()} founder(s)")
+    run("Load founder projects", lambda: f"{Project.query.count()} project(s)")
+    for p in Project.query.order_by(Project.id).all() if checks[-1][1] else []:
+        run(f"Project {p.id}: founders", lambda p=p: f"{len(p.founders)}")
+        run(f"Project {p.id}: milestones", lambda p=p: f"{len(p.milestones)}")
+        run(f"Project {p.id}: updates", lambda p=p: f"{len(p.updates)}")
+        run(f"Project {p.id}: change requests", lambda p=p: f"{len(p.requests)}")
+        run(f"Project {p.id}: agreement", lambda p=p: "yes" if p.agreement else "none yet")
+        run(f"Project {p.id}: admin page", lambda p=p: (render_template(
+            "project_admin.html", p=p, stats=project_stats(p), agreement=signature_state(p)[0],
+            sig=signature_state(p)[1], all_founders=User.query.filter_by(role="founder").all()), "renders")[1])
+        run(f"Project {p.id}: founder page", lambda p=p: (render_founder_page(p, preview=True), "renders")[1])
+    run("Founders list page", lambda: (projects(), "renders")[1])
+
+    def template_links():
+        bad = []
+        folder = Path(current_app.root_path) / "templates"
+        for f in sorted(folder.glob("*.html")):
+            for ep in re.findall(r"url_for\(\s*'([^']+)'", f.read_text(encoding="utf-8")):
+                if ep != "static" and ep not in current_app.view_functions:
+                    bad.append(f"{f.name} links to missing page '{ep}'")
+        if bad:
+            raise RuntimeError("Templates from a different version: " + "; ".join(bad))
+        return f"{len(list(folder.glob('*.html')))} templates, all links valid"
+    run("Template files match this app version", template_links)
+    return render_template("diagnostics.html", checks=checks, columns=columns, migrations=migrations,
+                           version=APP_VERSION)
+
+
 DEFAULT_AGREEMENT = """1. Scope of work
 Describe what will be built and delivered.
 
@@ -1680,9 +1738,16 @@ def register_errors(app):
         return page(400, "Session expired", "Your form session expired or was invalid. Go back, refresh, and try again.")
 
     @app.errorhandler(500)
-    def e500(_):
+    def e500(e):
         db.session.rollback()
-        return page(500, "Something went wrong", "An unexpected error occurred. Nothing has been exposed; please try again.")
+        orig = getattr(e, "original_exception", None) or e
+        current_app.logger.error("500 on %s: %s: %s", request.path, type(orig).__name__, orig)
+        detail = None
+        user = getattr(g, "user", None)
+        if user is not None and getattr(user, "role", None) == "admin":  # only admins see the technical reason
+            detail = f"{type(orig).__name__}: {' '.join(str(orig).split())[:600]}"
+        return render_template("error.html", code=500, title="Something went wrong", detail=detail,
+                               message="An unexpected error occurred. Nothing has been exposed; please try again."), 500
 
 
 # --------------------------------------------------------------------------- CLI

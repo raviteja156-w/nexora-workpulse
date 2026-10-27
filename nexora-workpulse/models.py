@@ -31,7 +31,8 @@ class User(db.Model):
     skill_frontend = db.Column(db.String(10))
     onboarded_at = db.Column(db.DateTime)
     # Founders (clients) belong to one project and only see its status page and agreement.
-    project_id = db.Column(db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="SET NULL"))
+    # Stored in its own column name so it never clashes with a leftover "project_id" column from older apps.
+    project_id = db.Column("founder_project_id", db.Integer, db.ForeignKey("nwp_founder_projects.id", ondelete="SET NULL"))
     project = db.relationship("Project", back_populates="founders", foreign_keys=[project_id])
     __table_args__ = (db.CheckConstraint("role IN ('admin','member','founder')", name="ck_nwp_users_role"),)
 

@@ -775,8 +775,6 @@ def task_update(aid):
     except ValueError:
         progress = None
         errors.append("Progress must be a whole number from 0 to 100.")
-    if not note:
-        errors.append("Write what you worked on today.")
     if link and not valid_url(link):
         errors.append("The link must be a valid http:// or https:// URL (for code, paste your GitHub pull request).")
     if errors:
@@ -787,7 +785,7 @@ def task_update(aid):
     if a.status in ("not_started", "needs_changes"):
         a.status = "in_progress"
     db.session.add(TaskUpdate(assignment_id=a.id, user_id=g.user.id, update_date=local_today(),
-                              progress=progress, note=note, pr_url=link or None))
+                              progress=progress, note=note or f"Progress updated to {progress}%", pr_url=link or None))
     db.session.commit()
     flash("Today's progress is saved.", "success")
     return redirect(url_for("web.my_task", aid=a.id))
@@ -1644,7 +1642,7 @@ def register_filters(app):
 
     @app.template_filter("hue")
     def hue(value):
-        return (sum(ord(c) for c in str(value)) * 47) % 360
+        return (sum(ord(c) for c in str(value)) * 47) % 36 * 10
 
     app.jinja_env.globals.update(
         STATUS=STATUS, PRIORITIES=PRIORITIES, SKILLS=SKILLS, SKILL_AREAS=SKILL_AREAS, WORK_TYPES=WORK_TYPES,

@@ -35,13 +35,12 @@
         <a href="{{ url_for('web.agreement') }}" class="{{ 'on' if ep == 'web.agreement' }}"><span class="ni">{{ icon('review', 17) }}</span>Agreement</a>
       {% else %}
         <a href="{{ url_for('web.attendance_history') }}" class="{{ 'on' if ep == 'web.attendance_history' }}"><span class="ni">{{ icon('clock', 17) }}</span>My hours</a>
-        <a href="{{ url_for('web.onboarding', step=1) }}" class="{{ 'on' if ep == 'web.onboarding' }}"><span class="ni">{{ icon('sparkles', 17) }}</span>My skills</a>
       {% endif %}
       <a href="{{ url_for('web.change_password') }}" class="{{ 'on' if ep == 'web.change_password' }}"><span class="ni">{{ icon('key', 17) }}</span>Password</a>
     </nav>
     <form method="post" action="{{ url_for('web.logout') }}" class="side-user">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <span class="avatar sm" style="--h: {{ g.user.name|hue }}">{{ g.user.name|initials }}</span>
+      <span class="avatar sm hue-{{ g.user.name|hue }}">{{ g.user.name|initials }}</span>
       <span class="who"><b>{{ g.user.name }}</b><small>{{ ROLES[g.user.role] }}</small></span>
       <button class="icon-btn" type="submit" title="Sign out" aria-label="Sign out">{{ icon('logout', 17) }}</button>
     </form>

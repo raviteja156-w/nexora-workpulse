@@ -369,13 +369,15 @@ def test_daily_progress_complete_review_and_merge(app, admin, mia, raj):
     aid = one_assignment(app, admin)
     assert raj.get(f"/my-tasks/{aid}").status_code == 404
     assert raj.post(f"/my-tasks/{aid}/update", data={"progress": "10", "note": "x"}).status_code == 404
-    assert b"Write what you worked on" in mia.post(f"/my-tasks/{aid}/update", data={"progress": "10"}).data
+    assert mia.post(f"/my-tasks/{aid}/update", data={"progress": "10"}).status_code == 302  # progress only is enough
+    with app.app_context():
+        assert TaskUpdate.query.one().note == "Progress updated to 10%"
     assert b"whole number" in mia.post(f"/my-tasks/{aid}/update", data={"progress": "500", "note": "x"}).data
     assert b"valid http" in mia.post(f"/my-tasks/{aid}/update", data={"progress": "5", "note": "x", "link": "javascript:alert(1)"}).data
     assert mia.post(f"/my-tasks/{aid}/update", data={"progress": "40", "note": "API skeleton", "link": PR}).status_code == 302
     with app.app_context():
         a = db.session.get(Assignment, aid)
-        assert a.status == "in_progress" and a.pr_url == PR and a.progress == 40 and len(a.updates) == 1
+        assert a.status == "in_progress" and a.pr_url == PR and a.progress == 40 and len(a.updates) == 2
     page = admin.get("/admin/records?range=today").get_data(as_text=True)
     assert "API skeleton" in page and "Mia Member" in page
     assert b"#7" in admin.get("/dashboard").data  # PR waiting to merge

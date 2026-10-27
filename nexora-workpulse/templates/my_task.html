@@ -19,7 +19,7 @@
 
 <section class="card">
   {{ stage_bar(a) }}
-  <div style="display:flex;align-items:center;gap:12px;margin-top:10px"><div class="bar" style="--w: {{ a.progress }};flex:1"><i></i></div><b class="hours">{{ a.progress }}%</b></div>
+  <div style="display:flex;align-items:center;gap:12px;margin-top:10px"><div class="bar flex1 wv-{{ a.progress }}"><i></i></div><b class="hours">{{ a.progress }}%</b></div>
 </section>
 
 {{ errors_list(errors) }}
@@ -41,8 +41,8 @@
         {{ csrf() }}
         <label for="progress">Overall progress (%)</label>
         <input id="progress" name="progress" type="number" min="0" max="100" step="5" value="{{ form.get('progress', a.progress) }}" required>
-        <label for="note">What did you do today? *</label>
-        <textarea id="note" name="note" rows="3" maxlength="5000" placeholder="e.g. Built the login form validation, wrote 3 tests" required>{{ form.get('note', '') }}</textarea>
+        <label for="note">What did you do today? (optional)</label>
+        <textarea id="note" name="note" rows="3" maxlength="5000" placeholder="e.g. Built the login form validation, wrote 3 tests">{{ form.get('note', '') }}</textarea>
         <label for="link">Pull request or work link</label>
         <input id="link" name="link" type="url" maxlength="500" placeholder="https://github.com/owner/repo/pull/12" value="{{ form.get('link', '') if 'note' in form else '' }}">
         <p class="hint">Paste your GitHub pull request so the admin can review and merge it.</p>

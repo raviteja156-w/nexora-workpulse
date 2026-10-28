@@ -1,6 +1,0 @@
-{% extends 'base.html' %}
-{% block title %}Edit account{% endblock %}
-{% block content %}
-<section class="card narrow"><h1>Edit account</h1>{% for e in errors %}<div class="flash flash-error" role="alert">{{ e }}</div>{% endfor %}
-<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label for="name">Full name</label><input id="name" name="name" value="{{ request.form.get('name', account.name) }}" maxlength="80" required><label for="email">Email</label><input id="email" name="email" type="email" value="{{ request.form.get('email', account.email) }}" maxlength="254" required><label for="role">Role</label><select id="role" name="role">{% for role in ['member','founder','connector'] %}<option value="{{ role }}" {{ 'selected' if request.form.get('role', account.role) == role }}>{{ role|capitalize }}</option>{% endfor %}</select><p class="note">Admin accounts cannot be changed here, to preserve a single Admin role.</p><button class="btn btn-primary">Save changes</button> <a class="btn btn-ghost" href="{{ url_for('web.users') }}">Cancel</a></form></section>
-{% endblock %}

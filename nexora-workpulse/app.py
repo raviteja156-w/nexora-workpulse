@@ -519,7 +519,7 @@ def start_attendance(user, now):
 
 
 @bp.route("/login", methods=["GET", "POST"])
-@limiter.limit("10 per minute;40 per hour", methods=["POST"])
+@limiter.limit("20 per minute;120 per hour", methods=["POST"])
 def login():
     if g.user:
         return redirect(url_for("web.dashboard"))
@@ -532,7 +532,12 @@ def login():
         else:
             user = User.query.filter_by(email=email).first()
             ok = check_password_hash(user.password_hash if user else DUMMY_HASH, password)
-            if user and ok and user.is_active:
+            if user and not ok and password != password.strip():
+                # phone keyboards / autofill often add a space before or after the password
+                ok = check_password_hash(user.password_hash, password.strip())
+            if user and ok and not user.is_active:
+                error = "This account is disabled. Ask your administrator to enable it on the Team page."
+            elif user and ok:
                 session.clear()
                 session.permanent = True
                 session["uid"], session["sv"] = user.id, user.session_version
@@ -549,7 +554,8 @@ def login():
                 else:
                     db.session.commit()
                 return redirect(url_for("web.dashboard"))
-            error = "Incorrect email or password, or the account is disabled."
+            else:
+                error = "Incorrect email or password. Check for capital letters in the password."
     return render_template("login.html", error=error, email=email)
 
 
@@ -1589,14 +1595,14 @@ Describe what will be built and delivered.
 2. Timeline
 Key milestones and the expected launch date.
 
-3. Fees and payment terms
-Total fee, payment schedule and due dates.
+3. Progress and reporting
+Work status, milestones and team updates are shared on the WorkPulse project page.
 
 4. Changes
 Change requests are submitted through the WorkPulse founder page. Changes outside the agreed scope may need a separate quote.
 
 5. Ownership and confidentiality
-Who owns the code and designs after full payment, and how both sides keep information confidential.
+Who owns the code and designs once the project is delivered, and how both sides keep information confidential.
 
 6. Support
 What support is included after launch and for how long.
@@ -1735,6 +1741,9 @@ def register_errors(app):
 
     @app.errorhandler(CSRFError)
     def ecsrf(_):
+        if request.endpoint == "web.login":
+            flash("Your sign-in page was open too long or cookies were blocked. Please sign in again.", "warning")
+            return redirect(url_for("web.login"))
         return page(400, "Session expired", "Your form session expired or was invalid. Go back, refresh, and try again.")
 
     @app.errorhandler(500)
@@ -1855,9 +1864,9 @@ def seed_demo():
     db.session.flush()
     for m in members:
         db.session.add(Assignment(task_id=t.id, user_id=m.id))
-    pr = Project(name="Acme Hiring App", summary="A two-sided hiring platform for schools and teachers.",
+    pr = Project(name="Client Web App", summary="Website and project dashboard, tracked in WorkPulse.",
                  live_url="https://example.com", phase="development", status="on_track", progress=58,
-                 status_note="Teacher profiles are done. Payments go live next week.",
+                 status_note="Design is approved. Dashboard pages are being built this week.",
                  start_date=today - timedelta(days=20), target_date=today + timedelta(days=25))
     db.session.add(pr)
     db.session.flush()
@@ -1866,7 +1875,7 @@ def seed_demo():
                                      ("Launch", "pending"))):
         db.session.add(Milestone(project_id=pr.id, title=title, status=st, sort_order=i))
     db.session.add(ProjectUpdate(project_id=pr.id, author_id=1, body="Design approved. Development has started."))
-    db.session.add(Agreement(project_id=pr.id, title="Acme Hiring App — Project Agreement", body=DEFAULT_AGREEMENT,
+    db.session.add(Agreement(project_id=pr.id, title="Client Web App — Project Agreement", body=DEFAULT_AGREEMENT,
                              updated_by=1))
     db.session.add(User(name="Farah Founder", email=DEMO_FOUNDER, role="founder", project_id=pr.id,
                         password_hash=generate_password_hash(DEMO_MEMBER_PW)))

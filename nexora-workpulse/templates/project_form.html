@@ -12,7 +12,7 @@
   {{ errors_list(errors) }}
   <form method="post" novalidate>
     {{ csrf() }}
-    <label for="name">Project name *</label><input id="name" name="name" value="{{ v.get('name', '') }}" maxlength="120" placeholder="e.g. Acharyaz hiring platform" required>
+    <label for="name">Project name *</label><input id="name" name="name" value="{{ v.get('name', '') }}" maxlength="120" placeholder="e.g. Company website and dashboard" required>
     <label for="summary">Short description</label><textarea id="summary" name="summary" rows="3" maxlength="3000" placeholder="One or two lines the founder sees under the project name">{{ v.get('summary', '') }}</textarea>
     <label for="live_url">Live application link</label><input id="live_url" name="live_url" type="url" value="{{ v.get('live_url', '') }}" maxlength="500" placeholder="https://app.example.com">
     <div class="grid-2" style="margin:0;gap:14px">

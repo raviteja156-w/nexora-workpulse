@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% from '_icons.html' import icon %}
 {% from '_ui.html' import csrf, errors_list %}
+{% block body_class %}founder-view{% endblock %}
 {% block title %}{{ p.name if p else 'Project status' }}{% endblock %}
 {% block content %}
 {% if preview %}

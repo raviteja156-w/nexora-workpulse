@@ -13,7 +13,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23ec4899'/%3E%3Cpath d='M21 12h-4l-3 7-4-14-3 7H3' stroke='white' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
 {% if g.user and not bare %}
 {% set ep = request.endpoint or '' %}

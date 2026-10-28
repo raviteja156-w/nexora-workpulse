@@ -32,7 +32,7 @@
           <div><label for="progress">Overall progress (%)</label><input id="progress" name="progress" type="number" min="0" max="100" step="1" value="{{ p.progress }}"></div>
         </div>
         <label for="live_url">Live application link</label><input id="live_url" name="live_url" type="url" maxlength="500" value="{{ p.live_url or '' }}" placeholder="https://app.example.com">
-        <label for="status_note">Status message to the founder</label><textarea id="status_note" name="status_note" rows="3" maxlength="2000" placeholder="e.g. Payments are being integrated this week. Next demo on Friday.">{{ p.status_note or '' }}</textarea>
+        <label for="status_note">Status message to the founder</label><textarea id="status_note" name="status_note" rows="3" maxlength="2000" placeholder="e.g. Dashboard pages are being built this week. Next demo on Friday.">{{ p.status_note or '' }}</textarea>
         <button class="btn btn-primary" type="submit" style="margin-top:14px">{{ icon('send', 16) }} Update founder page</button>
       </form>
     </section>

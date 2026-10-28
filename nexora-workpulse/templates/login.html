@@ -23,9 +23,9 @@
     <form method="post" action="{{ url_for('web.login') }}" novalidate>
       {{ csrf() }}
       <label for="email">Email address</label>
-      <input id="email" name="email" type="email" value="{{ email }}" autocomplete="username" maxlength="254" placeholder="you@company.com" required autofocus>
+      <input id="email" name="email" type="email" inputmode="email" value="{{ email }}" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="254" placeholder="you@company.com" required>
       <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="200" placeholder="••••••••••••" required>
+      <input id="password" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="200" placeholder="••••••••••••" required>
       <button class="btn btn-primary btn-block btn-lg" type="submit">Sign in &amp; start my day {{ icon('arrow', 18) }}</button>
     </form>
     <div style="margin-top:22px">{% include '_observed.html' %}</div>

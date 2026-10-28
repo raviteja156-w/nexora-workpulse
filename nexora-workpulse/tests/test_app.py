@@ -127,14 +127,16 @@ def test_disable_user_logs_them_out(app, admin, mia):
 
 def test_csrf_enforced_when_enabled():
     app = make_app(WTF_CSRF_ENABLED=True)
-    r = app.test_client().post("/login", data={"email": "mia@example.com", "password": PW})
-    assert r.status_code == 400
+    c = app.test_client()
+    r = c.post("/login", data={"email": "mia@example.com", "password": PW})
+    assert r.status_code == 302 and r.headers["Location"].endswith("/login")  # fresh form, not signed in
+    assert c.get("/dashboard").status_code == 302
 
 
 def test_login_rate_limited():
     app = make_app(RATELIMIT_ENABLED=True)
     c = app.test_client()
-    codes = [login(c, "mia@example.com", "bad-password-xyz").status_code for _ in range(12)]
+    codes = [login(c, "mia@example.com", "bad-password-xyz").status_code for _ in range(22)]
     assert 429 in codes
 
 
@@ -611,3 +613,24 @@ def test_diagnostics_page_and_admin_error_detail(app, admin, mia):
         assert r.status_code == 500 and b"boom-test" in r.data  # admins see the reason
     finally:
         appmod.project_stats = orig
+
+
+
+def test_same_founder_login_on_many_devices_and_phone_quirks(app, admin):
+    admin.post("/admin/founders/new", data={"name": "Acme"})
+    admin.post("/admin/users/new", data={"name": "Founders", "email": "founders@acme.com", "password": PW,
+                                         "confirm_password": PW, "role": "founder", "project_id": "1"})
+    devices = [app.test_client() for _ in range(6)]
+    assert login(devices[0], "Founders@Acme.com ").status_code == 302   # phone capitalised the email
+    assert login(devices[1], "founders@acme.com", PW + " ").status_code == 302  # autofill added a space
+    for d in devices[2:]:
+        assert login(d, "founders@acme.com").status_code == 302
+    assert all(d.get("/dashboard").status_code == 200 for d in devices)  # nobody was signed out
+    assert all(b"founder-view" in d.get("/dashboard").data for d in devices[:1])
+
+
+def test_disabled_account_message_is_clear(app):
+    with app.app_context():
+        User.query.filter_by(email="mia@example.com").one().is_active = False
+        db.session.commit()
+    assert b"This account is disabled" in login(app.test_client(), "mia@example.com").data

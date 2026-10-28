@@ -615,3 +615,56 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--cyan);font-weight:650
 .option .lv b.lvh-0{height:12px}.option .lv b.lvh-1{height:20px}.option .lv b.lvh-2{height:28px}
 .tone{width:22px}.tone-ok{color:#6ee7b7}.tone-live{color:#67e8f9}.tone-miss{color:#fda4af}
 .flex1{flex:1}
+
+/* ================================================================ PHONE & TABLET PERFORMANCE
+   Phones struggle with live blur, fixed animated backgrounds and endless animations while scrolling.
+   On touch devices / small screens we keep the colours and the one-time entrance animation,
+   but switch off everything that repaints on every frame. Desktop is unchanged. */
+picture.art{display:contents}
+html,body{overflow-x:clip}
+@media (max-width:1000px),(hover:none),(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  /* static background instead of 3 huge blurred moving blobs */
+  .aurora{background:radial-gradient(520px 420px at 0% 0%,rgba(139,92,246,.30),transparent 70%),radial-gradient(440px 380px at 100% 40%,rgba(236,72,153,.18),transparent 70%),radial-gradient(420px 360px at 40% 100%,rgba(34,211,238,.14),transparent 70%)}
+  .aurora span,.aurora::after{display:none}
+  /* no live blur behind panels */
+  .card,.stat,.side,.topbar,.wiz-card,.f-note,.hero,.person-card,.browser,.flash{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+  .card,.stat,.person-card,.wiz-card{background:#14173a}
+  .topbar,.side{background:#0b0c22}
+  .ring::before,.f-ring::before,.stat::after{display:none}
+  .card,.stat,.hero,.f-hero,.person-card,.wiz-card,.task-card{box-shadow:0 8px 24px -14px rgba(0,0,0,.7)}
+  /* endless animations off (entrance animations stay) */
+  .a-float,.a-spin,.a-pulse,.a-wiggle,.a-beat,.a-tick,
+  .logo::after,.live::after,.observed::after,.observed-icon .ic,
+  .f-hero::before,.f-orbit,.f-title .w,.shimmer,
+  .f-journey li.now .node,.stages li.now i,.f-miles .ms-in_progress .dot,.st8-working .ic,
+  .typing,.option input:checked+.box .tick,.btn::after{animation:none!important}
+  .f-title .w,.shimmer,.headline .w{opacity:1;transform:none}
+  .typing{max-width:none;border:0;white-space:normal}
+  .f-hero::after{display:none}
+  .f-rocket{display:none}
+  .f-orbit i{box-shadow:none}
+  /* hover lifts feel sticky on touch screens */
+  .card:hover,.stat:hover,.task-card:hover,.person-card:hover,.flow li:hover,.f-miles li:hover,.btn:hover,.f-live:hover .browser{transform:none}
+  .btn::after{display:none}
+  /* shorter, lighter entrance animation */
+  .card,.stat,.task-card,.person-card,.pr,.f-req,.f-miles li,.timeline li,.flow li,.f-journey li,.feature,.option,.page-head,.hero,.f-hero{animation-duration:.35s!important;animation-delay:0s!important}
+}
+@media (max-width:760px){.f-journey{margin-top:26px}}
+
+/* ================================================================ FOUNDER PAGES: SMOOTH ON EVERY DEVICE
+   Same look, but nothing repaints the screen continuously: the glow, gradients and borders are kept
+   and simply stand still. Pages still slide in once when opened. Applies only to founder pages. */
+.founder-view .aurora{background:radial-gradient(520px 420px at 0% 0%,rgba(139,92,246,.30),transparent 70%),radial-gradient(440px 380px at 100% 40%,rgba(236,72,153,.18),transparent 70%),radial-gradient(420px 360px at 40% 100%,rgba(34,211,238,.14),transparent 70%)}
+.founder-view .aurora span,.founder-view .aurora::after{display:none}
+.founder-view .card,.founder-view .stat,.founder-view .side,.founder-view .topbar,.founder-view .f-note,.founder-view .browser,.founder-view .flash{-webkit-backdrop-filter:none;backdrop-filter:none}
+.founder-view .card,.founder-view .stat{background:#151839}
+.founder-view .side{background:#0b0c22}
+.founder-view .f-hero::before,.founder-view .f-orbit,.founder-view .f-title .w,
+.founder-view .a-float,.founder-view .a-spin,.founder-view .a-pulse,.founder-view .a-wiggle,.founder-view .a-beat,.founder-view .a-tick,
+.founder-view .logo::after,.founder-view .live::after,.founder-view .f-journey li.now .node,.founder-view .f-miles .ms-in_progress .dot,
+.founder-view .btn::after{animation:none!important}
+.founder-view .f-title .w{opacity:1;transform:none}
+.founder-view .f-ring::before{filter:none;opacity:.25;inset:-6px}
+.founder-view .f-hero::after{display:none}
+.founder-view .f-hero{box-shadow:0 20px 50px -30px rgba(139,92,246,.55)}
